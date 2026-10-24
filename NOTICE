@@ -1,0 +1,29 @@
+pdw-linux — a Linux/macOS-oriented port of PDW
+
+This project is a derivative work of PDW, the POCSAG / FLEX / ACARS / Mobitex /
+ERMES paging decoder for Windows:
+
+  Copyright (c) 2001-2004 Jason Petty
+  Copyright (c) 2004-2010 Peter Hunt
+  Copyright discriminator.nl
+  Open sourced 2013 under the GNU General Public License
+  https://discriminator.nl/pdw/index-en.html
+  https://github.com/Discriminator/PDW
+
+All credit for the decoding algorithms, tuning constants and the behaviour this
+port reproduces belongs to the original authors. This port is independent and is
+not endorsed by them; bugs here are ours, not theirs.
+
+Licence: GNU General Public License, version 3 or (at your option) any later
+version, same as upstream. See LICENSE.
+
+Files under libpdw/src/upstream_*.cpp, libpdw/src/flex.cpp, libpdw/src/pocsag.cpp
+and libpdw/include/headers/ are generated from or derived from upstream PDW source
+by tools/import_upstream.sh (pinned to upstream commit 6e18d3c) and keep their
+original copyright. Everything else (compat/, support.cpp, cli/, tests/) is new.
+
+Not imported on purpose: upstream's helper_funcs.cpp/.h, which carry the notice
+"Do not modify, reproduce or use this file without my permission!" and so cannot be
+redistributed under the GPL. Their few utility functions are re-implemented in
+libpdw/src/support.cpp. Upstream's utils/ (AT&T/Lucent OSTYPE, binary.cpp) are
+likewise not used.
