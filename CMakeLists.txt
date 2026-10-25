@@ -74,3 +74,15 @@ endif()
 
 enable_testing()
 add_subdirectory(tests)
+
+# ---- install ----------------------------------------------------------------------------------
+include(GNUInstallDirs)
+install(TARGETS pdw-cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(TARGET pdw)
+  install(TARGETS pdw RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  if(UNIX AND NOT APPLE)
+    install(FILES packaging/pdw.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+  endif()
+endif()
+install(FILES data/language.df data/base-ids.txt data/PDW.pdf DESTINATION ${CMAKE_INSTALL_DATADIR}/pdw)
+install(FILES LICENSE NOTICE DESTINATION ${CMAKE_INSTALL_DOCDIR})

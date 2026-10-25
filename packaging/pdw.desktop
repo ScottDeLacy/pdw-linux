@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PDW
+GenericName=Pager decoder
+Comment=POCSAG, FLEX, ACARS, Mobitex and ERMES decoder
+Exec=pdw
+Icon=pdw
+Terminal=false
+Categories=HamRadio;Network;
