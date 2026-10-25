@@ -18,6 +18,10 @@ add_library(pdw STATIC
   libpdw/src/upstream_misc.cpp
   libpdw/src/upstream_audio.cpp
   libpdw/src/upstream_decode_globals.cpp
+  libpdw/src/upstream_settings.cpp
+  libpdw/src/upstream_language.cpp
+  libpdw/src/upstream_gfx.cpp
+  libpdw/src/win32_shim.cpp
   libpdw/src/support.cpp)
 target_include_directories(pdw PUBLIC libpdw/include PRIVATE libpdw)
 target_compile_options(pdw PRIVATE ${PDW_CORE_FLAGS})

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include "pdw/decoder.hpp"
 #include "wav.hpp"
@@ -23,8 +24,16 @@ static void usage(FILE *o)
         "  --no-1600 --no-3200 --no-6400  disable FLEX speeds\n"
         "  --invert         start with inverted polarity\n"
         "  --no-group       do not convert FLEX group calls to text\n"
-        "  --json           one JSON object per message\n"
+        "  --dir DIR        PDW folder: pdw.ini, filters.ini, language.df, Logfiles/, Wavfiles/\n"
+        "                   (an existing Windows PDW folder works as it is). Without it nothing is written.\n"
+        "  --filters FILE   use this filters.ini\n"
+        "  --set KEY=VALUE  override a pdw.ini setting, e.g. --set BlockDuplicate=3 --set FlexGroupMode=2\n"
+        "  --save-settings  write pdw.ini (and filters.ini) into --dir at the end\n"
+        "  --filtered       print the filter pane instead of the monitor pane\n"
+        "  --color[=never]  ANSI colours as PDW paints them (default: only on a terminal)\n"
+        "  --json           one JSON object per message instead of pane lines\n"
         "  --notices        also print decoder notices to stderr\n"
+        "  --status         also print the title-bar status text to stderr\n"
         "  -h, --help\n",
         o);
 }
@@ -44,7 +53,8 @@ int main(int argc, char **argv)
 {
     pdw::Config cfg;
     double rate = 22050, gain = 1.0;
-    bool json = false, notices = false;
+    bool json = false, notices = false, status = false, filtered = false, save = false;
+    int color = isatty(STDOUT_FILENO) ? 1 : 0;
     std::string input;
 
     for (int i = 1; i < argc; i++) {
@@ -67,6 +77,19 @@ int main(int argc, char **argv)
         else if (a == "--no-6400") cfg.flex_6400 = false;
         else if (a == "--invert") cfg.invert = true;
         else if (a == "--no-group") cfg.convert_si = false;
+        else if (a == "--dir") cfg.dir = need("--dir");
+        else if (a == "--filters") cfg.filters_file = need("--filters");
+        else if (a == "--set") {
+            std::string kv = need("--set");
+            size_t eq = kv.find('=');
+            if (eq == std::string::npos || eq == 0) { fprintf(stderr, "--set needs KEY=VALUE\n"); return 2; }
+            cfg.ini[kv.substr(0, eq)] = kv.substr(eq + 1);
+        }
+        else if (a == "--save-settings") save = true;
+        else if (a == "--filtered") filtered = true;
+        else if (a == "--color") color = 1;
+        else if (a == "--color=never") color = 0;
+        else if (a == "--status") status = true;
         else if (a == "--json") json = true;
         else if (a == "--notices") notices = true;
         else if (a == "-" || a[0] != '-') input = a;
@@ -75,21 +98,46 @@ int main(int argc, char **argv)
     if (input.empty()) { usage(stderr); return 2; }
     if (rate <= 0 || gain <= 0) { fprintf(stderr, "--rate and --gain must be positive\n"); return 2; }
 
-    pdw::Decoder dec(cfg);
-    dec.on_message([&](const pdw::Message &m) {
-        if (json) {
+    std::unique_ptr<pdw::Decoder> decp;
+    try {
+        decp.reset(new pdw::Decoder(cfg));
+    } catch (const std::exception &e) {
+        fprintf(stderr, "pdw-cli: %s\n", e.what());
+        return 1;
+    }
+    pdw::Decoder &dec = *decp;
+
+    if (json) {
+        dec.on_message([&](const pdw::Message &m) {
             printf("{\"capcode\":\"%s\",\"time\":\"%s\",\"date\":\"%s\",\"mode\":\"%s\",\"type\":\"%s\","
-                   "\"bitrate\":\"%s\",\"text\":\"%s\"}\n",
+                   "\"bitrate\":\"%s\",\"text\":\"%s\",\"monitor\":%s,\"filtered\":%s,\"monitor_only\":%s,"
+                   "\"filter\":%d,\"label\":\"%s\"}\n",
                    json_escape(m.capcode).c_str(), json_escape(m.time).c_str(), json_escape(m.date).c_str(),
                    json_escape(m.mode).c_str(), json_escape(m.type).c_str(), json_escape(m.bitrate).c_str(),
-                   json_escape(m.text).c_str());
-        } else {
-            printf("%s %s %s %s %s %s %s\n", m.capcode.c_str(), m.time.c_str(), m.date.c_str(), m.mode.c_str(),
-                   m.type.c_str(), m.bitrate.c_str(), m.text.c_str());
-        }
-        fflush(stdout);
-    });
+                   json_escape(m.text).c_str(), m.in_monitor ? "true" : "false", m.in_filter ? "true" : "false",
+                   m.monitor_only ? "true" : "false", m.filter, json_escape(m.label).c_str());
+            fflush(stdout);
+        });
+    } else {
+        const int want = filtered ? 1 : 0;
+        dec.on_line([&, want](int pane, const std::string &text, const std::vector<uint8_t> &colors) {
+            if (pane != want) return;
+            if (!color) {
+                printf("%s\n", text.c_str());
+            } else {
+                uint32_t last = 0xFFFFFFFFu;
+                for (size_t i = 0; i < text.size(); i++) {
+                    uint32_t c = dec.color_rgb(i < colors.size() ? colors[i] : 0);
+                    if (c != last) { printf("\x1b[38;2;%u;%u;%um", (c >> 16) & 255, (c >> 8) & 255, c & 255); last = c; }
+                    putchar(text[i]);
+                }
+                printf("\x1b[0m\n");
+            }
+            fflush(stdout);
+        });
+    }
     if (notices) dec.on_notice([](const std::string &n) { fprintf(stderr, "[notice]%s\n", n.c_str()); });
+    if (status) dec.on_status([](const std::string &t) { fprintf(stderr, "[status]%s\n", t.c_str()); });
 
     pdw::Resampler rs(rate);
     std::vector<int16_t> chunk, out;
@@ -121,5 +169,6 @@ int main(int argc, char **argv)
         feed(a.samples.data(), a.samples.size());
     }
     dec.finish();
+    if (save && !dec.save_settings()) fprintf(stderr, "pdw-cli: --save-settings needs --dir\n");
     return 0;
 }

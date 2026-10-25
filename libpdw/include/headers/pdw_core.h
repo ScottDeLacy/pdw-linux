@@ -16,3 +16,6 @@ bool BlockChecker(char *address, int fnu, char *message, bool reject);
 void SetNewWindowText(char *text);
 void Reset_ATB(void);
 void CreateDateFilename(char *ext, SYSTEMTIME *yesterday);
+void SystemTrayWindow(bool hide);
+void check_save_data(void);
+bool ReadFilters(char *szFilters, PPROFILE pProfile, bool bNew);

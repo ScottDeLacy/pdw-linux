@@ -85,3 +85,71 @@ unsigned long  *old_cpstn;
 unsigned short int *old_freqdata;
 unsigned char  *old_linedata;
 
+
+// ---- decode.cpp lines 685,750 ----
+// Save statistics.
+void check_save_data(void)
+{
+	unsigned int index;
+	char filename[1024];
+	extern char szFilenameDate[16];		// Global buffer for date as filename
+	bool bDaily=false;
+
+	/*** Statistics output and statfile updates ***/
+
+	stat_timer--;
+
+	if (stat_timer == 0)
+	{
+		GetLocalTime(&statTime);
+		Get_Date_Time();
+
+		if (statTime.wDay  != prev_statTime.wDay) bDaily=true;
+		if (statTime.wHour != prev_statTime.wHour)
+		{
+			if (Profile.stat_file_enabled)
+			{
+				if (Profile.stat_file_use_date)
+				{
+					CreateDateFilename(".st", bDaily ? &prev_statTime : NULL);
+					sprintf(filename, "%s/%s", szLogPathName, szFilenameDate);
+				}
+				else sprintf(filename, "%s/%s.st", szLogPathName, Profile.stat_file);
+
+				if ((pStatFile = fopen(filename, "a")) != NULL)
+				{
+					fprintf(pStatFile, "*************** HOURLY (%02d:00-%02d:00) ***************\n\n", prev_statTime.wHour, statTime.wHour);
+					WriteStatFileHourly(pStatFile);
+
+					if (bDaily)
+					{
+						fprintf(pStatFile, "*********************** DAILY **********************\n\n");
+
+						WriteStatFileDaily(pStatFile);
+					}
+					fclose(pStatFile);
+					pStatFile=NULL;
+				}
+			}
+			for (index=0; index<NUM_STAT; index++)
+			{
+				hourly_stat[index][STAT_NUMERIC] = 0L;
+				hourly_char[index][STAT_NUMERIC] = 0L;
+				hourly_stat[index][STAT_ALPHA] = 0L;
+				hourly_char[index][STAT_ALPHA] = 0L;
+			}
+			if (bDaily)
+			{
+				for (index=0; index<NUM_STAT; index++)
+				{
+					daily_stat[index][STAT_NUMERIC] = 0L;
+					daily_char[index][STAT_NUMERIC] = 0L;
+					daily_stat[index][STAT_ALPHA] = 0L;
+					daily_char[index][STAT_ALPHA] = 0L;
+				}
+			}
+			prev_statTime = statTime;
+		}
+		stat_timer = 100 - ((statTime.wSecond % 10) * 10);
+	}
+}

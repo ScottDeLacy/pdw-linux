@@ -1,4 +1,5 @@
-// Public API of libpdw: feed discriminator audio in, get decoded pager messages out.
+// Public API of libpdw: feed discriminator audio in, get PDW's on-screen lines and
+// decoded pager messages out.
 //
 // Based on PDW by Jason Petty and Peter Hunt (GPL-3.0-or-later). See NOTICE.
 //
@@ -9,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -23,27 +25,43 @@ struct Message {
     std::string mode;      // "POCSAG-1".."POCSAG-4", "FLEX-A".."FLEX-D"
     std::string type;      // " ALPHA ", "NUMERIC", "SH/TONE", " GROUP ", ...
     std::string bitrate;   // "512", "1200", "2400", "1600", "3200", "6400"
-    std::string text;      // message body, with PDW's character mapping applied
-    std::vector<uint8_t> colors;  // per-character PDW colour index (COLOR_BITERRORS etc.)
+    std::string text;      // message body (UTF-8), with PDW's character mapping applied
+    std::vector<uint8_t> colors;  // per-byte PDW colour index (COLOR_BITERRORS etc.)
+
+    // What the PDW pipeline did with it.
+    bool in_monitor = true;      // shown in the monitor pane (pane 1)
+    bool in_filter = false;      // shown in the filter pane (pane 2)
+    bool monitor_only = false;   // matched a "monitor only" filter
+    int filter = -1;             // index of the matching filter, or -1
+    std::string label;           // filter label (with %-codes expanded), if any
 };
 
 struct Config {
-    // Audio level preset, same list as PDW's "Interface" dialog: 0 custom,
-    // 1-4 discriminator, 5-7 earphone, 8-10 speaker, 11-13 tape/rec out.
-    int audio_config = 5;
+    // Directory holding pdw.ini, filters.ini, language.df, Logfiles/ and Wavfiles/, i.e.
+    // the folder a Windows PDW install lives in; existing files are used as they are.
+    // Empty: built-in defaults and nothing is written to disk (no logging).
+    std::string dir;
+    // Use this filters.ini instead of <dir>/filters.ini (read-only unless it is inside `dir`).
+    std::string filters_file;
 
-    bool decode_pocsag = true, decode_flex = true;
-    bool pocsag_512 = true, pocsag_1200 = true, pocsag_2400 = true;
-    bool flex_1600 = true, flex_3200 = true, flex_6400 = true;
+    // Settings applied on top of pdw.ini, keyed by pdw.ini names ("Pocsag512", "FlexGroupMode",
+    // "BlockDuplicate", ...), always in the [PDW] section.
+    std::map<std::string, std::string> ini;
 
-    bool show_tone = true, show_numeric = true, show_misc = true;
-    bool show_instr = true;
-    bool convert_si = true;       // fold FLEX group calls into text messages (PDW default)
-    bool pocsag_function_numeric = false;  // "NTTA" function-number typing
-    bool pocsag_show_both = false;
-    bool invert = false;          // initial polarity; auto-corrected on sync
-    bool flex_time = false;       // use FLEX time/date broadcasts as program clock
-    std::string data_dir = ".";   // where missed-groupcalls.txt etc. go
+    // Convenience flags, equivalent to the ini keys noted. They only matter when they differ
+    // from PDW's defaults; pdw.ini is overridden by them.
+    int audio_config = 5;          // AudioConfiguration: 0 custom, 1-4 discriminator, 5-7 earphone,
+                                   // 8-10 speaker, 11-13 tape/rec out (PDW's "Interface" dialog)
+    bool decode_pocsag = true, decode_flex = true;                 // DecodePocsag, DecodeFlex
+    bool pocsag_512 = true, pocsag_1200 = true, pocsag_2400 = true;  // Pocsag512/1200/2400
+    bool flex_1600 = true, flex_3200 = true, flex_6400 = true;       // Flex1600/3200/6400
+    bool show_tone = true, show_numeric = true, show_misc = true;    // ShowTone, ShowNumeric, ShowBinary
+    bool show_instr = true;        // ShowInstr
+    bool convert_si = true;        // ConvertInstr: fold FLEX group calls into text messages
+    bool pocsag_function_numeric = false;  // PocsagFNU: "NTTA" function-number typing
+    bool pocsag_show_both = false;         // PocsagShowBoth
+    bool invert = false;           // InvertData: initial polarity; auto-corrected on sync
+    bool flex_time = false;        // FlexTIME: use FLEX time broadcasts as program clock
 };
 
 class Decoder {
@@ -51,6 +69,13 @@ public:
     using MessageCallback = std::function<void(const Message &)>;
     // Human-readable events: mode changes, "UNKNOWN SYNC HEADER", etc.
     using NoticeCallback = std::function<void(const std::string &)>;
+    // A finished line of PDW's panes. pane 0 = monitor (top), 1 = filter (bottom). `text` is
+    // UTF-8; `colors` has one PDW colour index per byte of `text`.
+    using LineCallback = std::function<void(int pane, const std::string &text, const std::vector<uint8_t> &colors)>;
+    // The title-bar status text (mode, cycle/frame, "Blocked Duplicate Message ..." etc.).
+    using StatusCallback = std::function<void(const std::string &)>;
+    // Filter sound: path of the .wav to play. Default: paplay/aplay/afplay.
+    using SoundCallback = std::function<void(const std::string &)>;
 
     explicit Decoder(const Config &cfg = {});
     ~Decoder();
@@ -59,17 +84,28 @@ public:
 
     void on_message(MessageCallback cb);
     void on_notice(NoticeCallback cb);
+    void on_line(LineCallback cb);
+    void on_status(StatusCallback cb);
+    void on_sound(SoundCallback cb);
 
     // Unsigned 8-bit mono @ 44100 Hz (128 = zero), as PDW's sound input.
     void feed_u8(const uint8_t *samples, size_t n);
     // Signed 16-bit mono @ 44100 Hz; `gain` scales before conversion to 8-bit.
     void feed_s16(const int16_t *samples, size_t n, float gain = 1.0f);
-    // Flush the final partial buffer through the decoder.
+    // End of input: flush the last buffer, close logs, save filters.ini hit counters.
     void finish();
+
+    // Write pdw.ini (all settings) and filters.ini into `dir`. Needs Config::dir.
+    bool save_settings();
+
+    // Colour (0xRRGGBB) PDW would paint a pane character with, for a colour index from
+    // Message::colors or LineCallback::colors, using the current settings.
+    uint32_t color_rgb(uint8_t color_index) const;
 
     // Receive quality 0..100 (PDW's bit-error indicator).
     double rx_quality() const;
     const Config &config() const { return cfg_; }
+    size_t filter_count() const;
 
 private:
     struct Impl;

@@ -66,7 +66,15 @@ COMMON='#include "compat/windows.h"
 #include <stdlib.h>
 #include <string.h>'
 
+# Windows path separators in C string literals ("%s\\x") become '/'.
+PATHSED='s#\\\\#/#g'
+# Report each displayed message to the application (end of ShowMessage's label block).
+EMITSED='s#^\t\t}\t// end of filter label#&\n\t\tpdw_message_shown(bMONITOR, bFILTERED, bMONITOR_ONLY, iMatch, szCurrentLabel[0]);#'
+
 extract "$SRC/upstream_misc.cpp" "$COMMON
+#include \"headers/language.h\"
+#include \"headers/mailopts.h\"
+void pdw_message_shown(bool monitor, bool filtered, bool monitor_only, int match, const char *label);
 #define MAX_SEPFILES 32
 #define MONITOR 0
 #define FILTER 1
@@ -82,16 +90,46 @@ extract "$SRC/upstream_misc.cpp" "$COMMON
 #define BLOCK_TIMER 0x03
 #define BLOCK_OPTION 0x03
 #define BLOCK_LOGFILE 0x04
+#define OPEN_FILE 0
+#define CLOSE_FILES 1
+#define CURRENT 0
+#define PREVIOUS 1
 #define BUILDSHOWLINE_LINEFEED 1
 #define BUILDSHOWLINE_LASTCHAR 2" Misc.cpp \
-  '49,108' '167,182' '185,231' \
-  '380,584:s#%s\\\\\(blocked\|missed-groupcalls\).txt#%s/\1.txt#' \
-  '1336,1459' '1541,1549' '2167,2233' '2236,2252' '2255,2271' '2293,2470' '2679,2710' '2736,2742'
+  '49,108' '111,112' '115,164' '167,182' '185,231' '238,296' \
+  "380,584:$PATHSED" \
+  "587,1333:$PATHSED;$EMITSED" \
+  "1336,1459" "1461,1538:$PATHSED" '1541,1549' '1551,1574' \
+  "1577,1716:$PATHSED" '1719,1928' '1931,2081' '2084,2165' \
+  '2167,2233' '2236,2252' '2255,2271' '2274,2292' '2293,2470' \
+  '2473,2678' '2679,2710' '2736,2742'
+
+# Settings (pdw.ini) and filters.ini load/save, and the language tables.
+extract "$SRC/upstream_settings.cpp" "$COMMON
+#include \"headers/language.h\"
+#include \"headers/mailopts.h\"
+// Placeholder for the Mobitex decoder state until mobitex.cpp is imported (slice 4).
+struct { int cfs, frsync, frsync_rev, bitsync, bitsync_rev, bitscr, ramnet, min_msg_len, show, timer, bitrate; } mb;
+static char szTEMP[MAX_STR_LEN];
+static int iTEMP;
+static bool bWin9x = false;
+int CompareCapcodes(char *szCapcode1, char *szCapcode2);" PDW.cpp \
+  '9456,9683' '9686,9937' '9939,10130' '10133,10251' '10907,10916'
+
+extract "$SRC/upstream_language.cpp" "$COMMON
+#include \"headers/language.h\"
+extern char szACARSPath[MAX_PATH];" language.cpp \
+  '34,342:s#wsprintf(szACARSPath, TEXT(\"%s\\\\%s\"), szPath,#snprintf(szACARSPath, sizeof szACARSPath, \"%s/%s\", szPath,#'
+
+fix < "$UP/Headers/language.h" > "$INC/language.h"
 
 extract "$SRC/upstream_audio.cpp" "$COMMON" sound_in.cpp \
   '31,104:/^HWAVEIN/d;/^HWAVEOUT/d;/^WAVEHDR/d;/^HGLOBAL/d' '378,623' '849,1028'
 
-extract "$SRC/upstream_decode_globals.cpp" "$COMMON" decode.cpp '28,96'
+extract "$SRC/upstream_decode_globals.cpp" "$COMMON" decode.cpp '28,96' "685,750:$PATHSED"
+
+# Message-column geometry (in characters; the GUI front end scales by its font).
+extract "$SRC/upstream_gfx.cpp" "$COMMON" Gfx.cpp '33,55' '78,94' '661,746'
 
 mkdir -p libpdw/include/utils
 fix < "$UP/utils/debug.h" > libpdw/include/utils/debug.h
