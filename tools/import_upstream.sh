@@ -136,8 +136,10 @@ extern char szACARSPath[MAX_PATH];" language.cpp \
 
 fix < "$UP/Headers/language.h" > "$INC/language.h"
 
+# skipped_sc 1080->1089: centres the FLEX 3200/6400 phase crossover (25 ms sync2 minus half a symbol);
+# measured pass rate with random sub-sample alignment roughly doubles (see project note).
 extract "$SRC/upstream_audio.cpp" "$COMMON" sound_in.cpp \
-  '31,104:/^HWAVEIN/d;/^HWAVEOUT/d;/^WAVEHDR/d;/^HGLOBAL/d' '378,623' '625,775' '849,1028'
+  '31,104:/^HWAVEIN/d;/^HWAVEOUT/d;/^WAVEHDR/d;/^HGLOBAL/d' '378,623:s/skipped_sc < 1080/skipped_sc < 1089/' '625,775' '849,1028'
 
 extract "$SRC/upstream_decode_globals.cpp" "$COMMON" decode.cpp '28,96' "685,750:$PATHSED;"'s#^\t\t\t\tif ((pStatFile = fopen#\t\t\t\tif (!FileExists(szLogPathName)) CreateDirectory(szLogPathName, NULL);\n&#'
 

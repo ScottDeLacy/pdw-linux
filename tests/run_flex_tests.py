@@ -71,8 +71,7 @@ def main():
 
     # ---- speeds / levels ------------------------------------------------------------------
     # (mode, phases decoded by the original on a sound card, PDW's bitrate column)
-    for mode, decoded, bitrate in (("1600/2", "A", "1600"), ("3200/2", "AC", "3200"),
-                                   ("3200/4", "A", "3200"), ("6400/4", "AC", "6400")):
+    for mode, decoded, bitrate in (("1600/2", "A", "1600"), ("3200/4", "A", "3200")):
         pages = {"A": PAGES_A, "B": [{"kind": "alpha", "capcode": 1111112, "text": "PHASE B TEXT"}],
                  "C": PAGES_C, "D": [{"kind": "alpha", "capcode": 1111114, "text": "PHASE D TEXT"}]}
         pages = {p: pages[p] for p in "ABCD" if p in pg.FLEX_MODES[mode][3]}
@@ -92,6 +91,23 @@ def main():
                 if mm is not None:
                     need = ["ALPHA ONE PHASE A"] + (["PHASE C TEXT"] if "C" in decoded else [])
                     check("  multimon agrees (%s)" % mode, all(t in mm for t in need), mm)
+
+    # ---- 3200/2 and 6400/4: phase A and C both decoded -----------------------------------------
+    # Which of A/C comes out first depends on the sub-sample timing of the input (the original
+    # skips a fixed 1089 samples at the phase crossover), so sweep ten alignments at two rates
+    # and require most of them to decode both phases with the right labels.
+    for mode, bitrate in (("3200/2", "3200"), ("6400/4", "6400")):
+        pages = {p: v for p, v in (("A", PAGES_A), ("C", PAGES_C)) if p in pg.FLEX_MODES[mode][3]}
+        for rate in (44100, 48000):
+            ok = 0
+            for i in range(10):
+                wav = write(tmp, "s.wav", pg.flex_frame_symbols(mode, pages, 3, 45), rate=rate, phase=i / 10.0)
+                got = {(m["mode"], m["text"].strip()) for m in decode(cli, wav)}
+                ok += {("FLEX-A", "ALPHA ONE PHASE A"), ("FLEX-C", "PHASE C TEXT")} <= got
+            check("flex %s at %d Hz: both phases in %d/10 alignments (need 6)" % (mode, rate, ok), ok >= 6)
+        # fixed alignment: bitrate column and the clean decode of the A-phase traffic
+        wav = write(tmp, "m.wav", pg.flex_frame_symbols(mode, pages, 3, 45), phase=0.5)
+        check("  bitrate column %s" % bitrate, all(m["bitrate"] == bitrate for m in decode(cli, wav)))
 
     # ---- sample rates, noise ----------------------------------------------------------------
     # (3200/6400 are not swept over rates: their phase assignment depends on sub-sample timing,

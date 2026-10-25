@@ -286,7 +286,7 @@ void Audio_To_Bits(char *lpAudioBuffer, long LenAudioBuffer)
 		if (cross_over)
 		{                
 			if (skipped_sc < 39) frame_flex(3);		// If skipping unreadable data, still need to keep flex routines happy!
-			if (skipped_sc < 1080)					// Works out to around 40 "1600 bits" or 80 "3200 bits".
+			if (skipped_sc < 1089)					// Works out to around 40 "1600 bits" or 80 "3200 bits".
 			{
 				skipped_sc++;
 				continue;
