@@ -116,6 +116,7 @@ void check_save_data(void)
 				}
 				else sprintf(filename, "%s/%s.st", szLogPathName, Profile.stat_file);
 
+				if (!FileExists(szLogPathName)) CreateDirectory(szLogPathName, NULL);
 				if ((pStatFile = fopen(filename, "a")) != NULL)
 				{
 					fprintf(pStatFile, "*************** HOURLY (%02d:00-%02d:00) ***************\n\n", prev_statTime.wHour, statTime.wHour);

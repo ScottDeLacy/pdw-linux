@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic pager-signal generator for testing pdw-cli.
 
-Builds POCSAG and FLEX (1600 bps, 2-level) bit streams from the public protocol
+Builds POCSAG and FLEX (1600/3200/6400, 2- and 4-level) bit streams from the public protocol
 descriptions and renders them as FM-discriminator-like audio, so decoders can be
 checked end to end without a radio or real (privacy-sensitive) captures.
 
@@ -91,7 +91,21 @@ def pocsag_stream(messages, baud_preamble=576):
     return bits
 
 
-# ---------------------------------------------------------------- FLEX 1600/2
+# ---------------------------------------------------------------- FLEX
+# Modes: sync code "A" (the 16 bit outer code of the sync header), symbol rate of sync2+data,
+# FSK levels, and the phases carried. 1600/2 is one phase; 3200/2 alternates phases A and C
+# symbol by symbol; 1600/4 carries phases A and B in the two bits of each symbol; 3200/4
+# (called FLEX-6400 by PDW) carries A,B and C,D on alternating symbols.
+FLEX_MODES = {
+    "1600/2": (0x870C, 1600, 2, "A"),
+    "3200/2": (0x7B18, 3200, 2, "AC"),
+    "3200/4": (0xB068, 1600, 4, "AB"),
+    "6400/4": (0xDEA0, 3200, 4, "ABCD"),
+}
+FLEX_IDLE_WORD = 0x1FFFFF
+FLEX_PAGE_ALPHA, FLEX_PAGE_SHORT_INSTR, FLEX_PAGE_TONE, FLEX_PAGE_STD_NUM = 5, 1, 2, 3
+
+
 def flex_word(w21):
     """21-bit value as PDW/FLEX words: transmitted bits are the inverted value, LSB first."""
     data = 0
@@ -108,52 +122,124 @@ def nibble_sum_fix(w21):
     return rest | c
 
 
-def flex_alpha_frame(capcode, text, cycle=0, frame=1):
-    """One FLEX frame (88 words) carrying a single short-address alpha message."""
-    chars = [0x20] + [ord(c) & 0x7F for c in text] + [3]       # 1st char of 1st content word is skipped by decoders
-    # first message word: fragment bits (11..12)=3 marks a complete message; PDW skips
-    # the character in bits 0..6 of that word.
-    msg_words = []
-    first = (3 << 11)
-    msg_words.append(first)
-    stream = chars[:]
-    # remaining chars: header word carries two chars at bits 7..13/14..20 in PDW's reader
-    # which overlaps the fragment field, so keep the header's char slots empty and start
-    # the text in the following words (3 chars/word).
-    while len(stream) % 3:
-        stream.append(3)
-    for i in range(0, len(stream), 3):
-        msg_words.append(stream[i] | stream[i + 1] << 7 | stream[i + 2] << 14)
-    biw_addr_start = 1
-    n_addr = 1
-    vsa = biw_addr_start + n_addr
-    w1 = vsa + n_addr                                       # first message word index
-    length = len(msg_words)
-    biw = nibble_sum_fix((vsa << 10) | ((biw_addr_start - 1) << 8))
-    addr = (capcode + 32768) & 0x1FFFFF
-    vec = nibble_sum_fix((5 << 4) | (w1 << 7) | (length << 14))
-    words21 = [biw, addr, vec] + msg_words
-    words21 += [0x1FFFFF] * (88 - len(words21))             # idle fill
-    return words21
+def flex_alpha_words(text, frag=3, cont=0):
+    """Message header word + 3 chars per word. The first char of the first content word is
+    ignored by receivers when frag == 3 (it carries the signature), so a space goes there."""
+    chars = ([0x20] if frag == 3 else []) + [ord(c) & 0x7F for c in text] + [3]   # ETX ends the text
+    while len(chars) % 3:
+        chars.append(3)                       # ETX filler is dropped by receivers
+    words = [(frag << 11) | (cont << 10)]
+    for i in range(0, len(chars), 3):
+        words.append(chars[i] | chars[i + 1] << 7 | chars[i + 2] << 14)
+    return words
 
 
-def flex_bits(frames_words21, cycle=0, frame_no=1):
-    bits = []
-    bits += [1, 0] * 32                                       # dotting
-    bits += bits_of(0x870C, 16) + bits_of(0xA6C6, 16) + bits_of(0xAAAA, 16) + bits_of(0x78F3, 16)
-    # Frame information word: same word coding as data words; value is
-    # checksum(0..3) | cycle(4..7) | frame(8..14) | 6 more bits (zero)
-    bits += [1, 0] * 8                                        # 16 bit gap before the FIW
-    bits += word_bits(flex_word(nibble_sum_fix((cycle << 4) | (frame_no << 8))))
-    bits += [1, 0] * 20                                       # sync 2 (40 bits)
-    # 11 blocks of 8 words, 32 bit words interleaved bit-by-bit
-    words32 = [flex_word(w) for w in frames_words21]
+def flex_numeric_words(digits):
+    """Standard numeric: 2 header bits, then 4-bit digits, LSB first, 21 bits per word."""
+    idx = {c: i for i, c in enumerate("0123456789*U -][")}
+    bits = [0, 0]
+    for d in digits:
+        v = idx[d]
+        bits += [(v >> i) & 1 for i in range(4)]
+    while len(bits) % 21:
+        bits += [0, 0, 1, 1]                  # fill digit 0xC
+    bits = bits[: (len(bits) // 21) * 21]
+    return [sum(b << i for i, b in enumerate(bits[k:k + 21])) for k in range(0, len(bits), 21)]
+
+
+def flex_phase_words(pages):
+    """pages: list of dicts for one phase -> the 88 21-bit words of that phase's frame.
+    kinds: alpha(capcode,text[,frag,cont]), numeric(capcode,digits), tone(capcode),
+    short_numeric(capcode,digits3), short_instr(capcode,group,frame)."""
+    n = len(pages)
+    base = 1 + 2 * n                          # first message word
+    addrs, vecs, msgs = [], [], []
+    for p in pages:
+        k = p["kind"]
+        addrs.append((p["capcode"] + 0x8000) & 0x1FFFFF)
+        w1 = base + len(msgs)
+        if k == "alpha":
+            mw = flex_alpha_words(p["text"], p.get("frag", 3), p.get("cont", 0))
+            vec = (FLEX_PAGE_ALPHA << 4) | (w1 << 7) | (len(mw) << 14)
+            msgs += mw
+        elif k == "numeric":
+            mw = flex_numeric_words(p["digits"])
+            assert 1 <= len(mw) <= 8
+            vec = (FLEX_PAGE_STD_NUM << 4) | (w1 << 7) | ((len(mw) - 1) << 14)
+            msgs += mw
+        elif k == "tone":
+            vec = (FLEX_PAGE_TONE << 4) | (1 << 7)
+        elif k == "short_numeric":
+            idx = "0123456789*U -]["
+            d = p["digits"]
+            assert len(d) == 3
+            vec = (FLEX_PAGE_TONE << 4) | (idx.index(d[0]) << 9) | (idx.index(d[1]) << 13) | (idx.index(d[2]) << 17)
+        elif k == "short_instr":
+            vec = (FLEX_PAGE_SHORT_INSTR << 4) | (p["frame"] << 10) | (p["group"] << 17)
+        else:
+            raise ValueError(k)
+        vecs.append(nibble_sum_fix(vec))
+    vsa = 1 + n
+    biw = nibble_sum_fix(vsa << 10) if n else FLEX_IDLE_WORD
+    words = [biw] + addrs + vecs + msgs
+    assert len(words) <= 88, "frame overflow"
+    return words + [FLEX_IDLE_WORD] * (88 - len(words))
+
+
+def flex_alpha_frame(capcode, text):
+    return flex_phase_words([{"kind": "alpha", "capcode": capcode, "text": text}])
+
+
+# Symbol (0 = most negative level .. 3 = most positive) from the channel bits of phases (a, b).
+# PDW: phase A bit is 1 for symbols 0,1; phase B bit is 1 for symbols 0,3.
+_SYM_FROM_BITS = {(1, 1): 0, (1, 0): 1, (0, 0): 2, (0, 1): 3}
+
+
+def flex_frame_symbols(mode, phase_pages, cycle=0, frame_no=1):
+    """One FLEX frame as [(symbol list, symbols/second)] segments. phase_pages maps a phase
+    letter to its page list (missing phases are idle)."""
+    code, symrate, levels, phases = FLEX_MODES[mode]
+    seg = []
+
+    def two_level(bits):                       # channel bit 1 -> symbol 0, bit 0 -> symbol 3
+        return [0 if b else 3 for b in bits]
+
+    head = [1, 0] * 32                                        # dotting
+    head += bits_of(code, 16) + bits_of(0xA6C6, 16) + bits_of(0xAAAA, 16) + bits_of(code ^ 0xFFFF, 16)
+    head += [1, 0] * 8                                        # 16 bit gap
+    head += word_bits(flex_word(nibble_sum_fix((cycle << 4) | (frame_no << 8))))   # FIW
+    seg.append((two_level(head), 1600))
+    seg.append((two_level([1, 0] * (symrate * 25 // 1000 // 2)), symrate))           # sync2: 25 ms idle
+
+    words32 = {}
+    for ph in phases:
+        words = flex_phase_words(phase_pages.get(ph, []))
+        words32[ph] = [word_bits(flex_word(w)) for w in words]
+    steps = {ph: [] for ph in phases}
     for blk in range(11):
-        group = words32[blk * 8:(blk + 1) * 8]
-        for j in range(32):
-            for w in group:
-                bits.append((w >> (31 - j)) & 1)
-    return bits
+        for j in range(32):                                   # 8 words interleaved bit by bit
+            for w in range(8):
+                for ph in phases:
+                    steps[ph].append(words32[ph][blk * 8 + w][j])
+    syms = []
+    for i in range(len(steps[phases[0]])):
+        if levels == 2:
+            for ph in phases:
+                syms += two_level([steps[ph][i]])
+        else:
+            for pair in (phases[0:2], phases[2:4]):
+                if pair:
+                    syms.append(_SYM_FROM_BITS[(steps[pair[0]][i], steps[pair[1]][i])])
+    seg.append((syms, symrate))
+    return seg
+
+
+def flex_stream(mode, frames):
+    """frames: list of (cycle, frame_no, {phase: pages}) sent back to back -> segments."""
+    segs = []
+    for cycle, frame_no, phase_pages in frames:
+        segs += flex_frame_symbols(mode, phase_pages, cycle, frame_no)
+    return segs
 
 
 # ---------------------------------------------------------------- audio
@@ -178,6 +264,32 @@ def render(bits, baud, rate=44100, amp=9000, invert=False, lead_s=0.3, tail_s=0.
     return out
 
 
+_LEVEL = {0: -1.0, 1: -1.0 / 3, 2: 1.0 / 3, 3: 1.0}
+
+
+def render_symbols(segments, rate=44100, amp=9000, invert=False, lead_s=0.3, tail_s=0.5, noise=0.0, phase=0.0):
+    """[(symbols, symbols_per_second)] -> discriminator-like audio. Symbols 0..3 are the FSK
+    levels from most negative to most positive (2-level FLEX uses 0 and 3). One continuous
+    clock runs through all segments; `phase` shifts the symbol grid by a fraction of a sample."""
+    import random
+    rng = random.Random(1)
+    sign = -1.0 if invert else 1.0
+    raw = []
+    pos = phase                                  # start of the current symbol, in samples
+    for syms, sr in segments:
+        spb = rate / sr
+        for s in syms:
+            pos += spb
+            raw += [sign * _LEVEL[s]] * (max(0, int(math.ceil(pos))) - len(raw))
+    fastest = max(sr for _, sr in segments)
+    a = 1 - math.exp(-2 * math.pi * 0.75 * fastest / rate)      # one-pole low pass
+    y, out = 0.0, []
+    for v in [0] * int(lead_s * rate) + raw + [0] * int(tail_s * rate):
+        y += a * (v - y)
+        out.append(int(max(-32768, min(32767, round(y * amp + (rng.gauss(0, noise) if noise else 0))))))
+    return out
+
+
 def write_wav(path, samples, rate=44100):
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
@@ -191,6 +303,7 @@ def main():
     ap.add_argument("kind", choices=["pocsag", "flex"])
     ap.add_argument("out")
     ap.add_argument("--baud", type=int, default=1200, help="POCSAG baud (512/1200/2400)")
+    ap.add_argument("--mode", default="1600/2", choices=sorted(FLEX_MODES), help="FLEX mode")
     ap.add_argument("--rate", type=int, default=44100)
     ap.add_argument("--invert", action="store_true")
     ap.add_argument("--noise", type=float, default=0.0)
@@ -204,9 +317,8 @@ def main():
         bits = pocsag_stream(msgs)
         audio = render(bits, a.baud, a.rate, a.amp, a.invert, noise=a.noise)
     else:
-        words = flex_alpha_frame(1234567, "FLEX TEST MESSAGE")
-        bits = flex_bits(words)
-        audio = render(bits, 1600, a.rate, a.amp, a.invert, noise=a.noise)
+        segs = flex_frame_symbols(a.mode, {"A": [{"kind": "alpha", "capcode": 1234567, "text": "FLEX TEST MESSAGE"}]})
+        audio = render_symbols(segs, a.rate, a.amp, a.invert, noise=a.noise)
     write_wav(a.out, audio, a.rate)
 
 

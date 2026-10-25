@@ -49,8 +49,8 @@ def case_pocsag(tmp, cli, baud, rate, invert, noise):
 
 def case_flex(tmp, cli, rate, invert, noise):
     wav = os.path.join(tmp, "f_%d_%s.wav" % (rate, "i" if invert else "n"))
-    audio = pg.render(pg.flex_bits(pg.flex_alpha_frame(1234567, "FLEX TEST MESSAGE")), 1600, rate,
-                      invert=invert, noise=noise)
+    segs = pg.flex_frame_symbols("1600/2", {"A": [{"kind": "alpha", "capcode": 1234567, "text": "FLEX TEST MESSAGE"}]})
+    audio = pg.render_symbols(segs, rate, invert=invert, noise=noise)
     pg.write_wav(wav, audio, rate)
     return wav, got_tuples(run_cli(cli, wav)), [("1234567", "ALPHA", "FLEX TEST MESSAGE")]
 

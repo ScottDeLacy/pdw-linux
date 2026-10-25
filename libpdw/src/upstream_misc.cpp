@@ -1328,13 +1328,13 @@ bool BlockChecker(char *address, int fnu, char *message, bool reject)
 			{
 				if (aMessages[999][BLOCK_ADDRESS])	// Array full?
 				{
-					memmove(aMessages[0], aMessages[1], sizeof(aMessages));
+					memmove(aMessages[0], aMessages[1], sizeof(aMessages) - sizeof(aMessages[0])), memset(aMessages[999], 0, sizeof(aMessages[999]));
 				}
 				for (i=0; i<1000; i++)
 				{
 					if (aMessages[i][BLOCK_ADDRESS] == 0)
 					{
-						memset(aMessages[i], 0, sizeof(aMessages));
+						memset(aMessages[i], 0, sizeof(aMessages[i]));
 
 						aMessages[i][BLOCK_ADDRESS]  = lAddress;
 						aMessages[i][BLOCK_TIME]     = iSecondsElapsed;

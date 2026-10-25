@@ -66,4 +66,63 @@ inline bool read(const std::string &path, Audio &out, std::string &err)
     return false;
 }
 
+// Streaming 16-bit mono WAV writer (header patched when closed).
+class Writer {
+public:
+    ~Writer() { close(); }
+    bool open(const std::string &path, double rate)
+    {
+        f_ = fopen(path.c_str(), "wb");
+        if (!f_) return false;
+        rate_ = (uint32_t)rate;
+        uint8_t h[44] = {};
+        fwrite(h, 1, sizeof h, f_);
+        return true;
+    }
+    void write(const int16_t *s, size_t n)
+    {
+        if (!f_) return;
+        for (size_t i = 0; i < n; i++) {
+            uint8_t b[2] = {(uint8_t)(s[i] & 0xFF), (uint8_t)((uint16_t)s[i] >> 8)};
+            fwrite(b, 1, 2, f_);
+        }
+        bytes_ += (uint32_t)(n * 2);
+    }
+    void close()
+    {
+        if (!f_) return;
+        auto w32 = [&](long off, uint32_t v) {
+            fseek(f_, off, SEEK_SET);
+            uint8_t b[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+            fwrite(b, 1, 4, f_);
+        };
+        auto w16 = [&](long off, uint16_t v) {
+            fseek(f_, off, SEEK_SET);
+            uint8_t b[2] = {(uint8_t)v, (uint8_t)(v >> 8)};
+            fwrite(b, 1, 2, f_);
+        };
+        fseek(f_, 0, SEEK_SET);
+        fwrite("RIFF", 1, 4, f_);
+        w32(4, 36 + bytes_);
+        fseek(f_, 8, SEEK_SET);
+        fwrite("WAVEfmt ", 1, 8, f_);
+        w32(16, 16);
+        w16(20, 1);
+        w16(22, 1);
+        w32(24, rate_);
+        w32(28, rate_ * 2);
+        w16(32, 2);
+        w16(34, 16);
+        fseek(f_, 36, SEEK_SET);
+        fwrite("data", 1, 4, f_);
+        w32(40, bytes_);
+        fclose(f_);
+        f_ = nullptr;
+    }
+
+private:
+    FILE *f_ = nullptr;
+    uint32_t rate_ = 0, bytes_ = 0;
+};
+
 }  // namespace wav

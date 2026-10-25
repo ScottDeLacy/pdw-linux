@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <atomic>
 #include <functional>
 #include <mutex>
 #include <stdexcept>
@@ -42,12 +43,14 @@ int nCount_Missed[2] = {0, 0};
 int nCount_BlockBuffer[2] = {0, 0};
 double dRX_Quality = 100.0;
 extern bool bEmpty_Frame;
+extern std::atomic<int> nSMTPemails, nSMTPerrors, nSMTPsessions;   // mail.cpp
+extern std::string g_smtp_last_error;
 extern unsigned long int aMessages[1000][3];
 extern int iPanePos;
 
 // Pieces of sound_in.cpp that the audio extract leaves out (no Win32 wave API).
 extern int nSamples, preamble_count[3], flex_cnt_1600, crossing, pre_threshold, sync_bit;
-extern long double WatchStep, clkt_hi, clkt_lo;
+extern double WatchStep, clkt_hi, clkt_lo;
 extern double WatchCtr;
 extern long BaudRate, last_baud_rate;
 extern int skipped_sc, process_acars_bit, config_index;
@@ -74,19 +77,42 @@ void Reset_ATB(void)
     BaudRate = 1600;
     last_baud_rate = 1600;
 
-    WatchStep = (long double)Profile.audioSampleRate / (long double)BaudRate;
+    WatchStep = (double)Profile.audioSampleRate / (double)BaudRate;
 }
 
 // ---- utilities (written for this port) --------------------------------------
 static long g_clock_offset_s = 0;  // FlexTIME: shift of the program clock, not the OS clock
+static int64_t g_clock_start = 0;  // != 0: the clock follows the audio (see Config::clock_start)
+static double g_audio_seconds = 0;
 
-static time_t now_adjusted() { return time(nullptr) + g_clock_offset_s; }
+static void clock_now(time_t &sec, int &msec)
+{
+    if (g_clock_start) {
+        double t = (double)g_clock_start + g_audio_seconds;
+        sec = (time_t)t;
+        msec = (int)((t - (double)sec) * 1000);
+    } else {
+        struct timeval tv;
+        gettimeofday(&tv, nullptr);
+        sec = tv.tv_sec;
+        msec = (int)(tv.tv_usec / 1000);
+    }
+    sec += g_clock_offset_s;
+}
+
+static time_t now_adjusted()
+{
+    time_t s;
+    int ms;
+    clock_now(s, ms);
+    return s;
+}
 
 void GetLocalTime(SYSTEMTIME *st)
 {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    time_t t = tv.tv_sec + g_clock_offset_s;
+    time_t t;
+    int msec;
+    clock_now(t, msec);
     struct tm tmv;
     localtime_r(&t, &tmv);
     st->wYear = tmv.tm_year + 1900;
@@ -96,7 +122,7 @@ void GetLocalTime(SYSTEMTIME *st)
     st->wHour = tmv.tm_hour;
     st->wMinute = tmv.tm_min;
     st->wSecond = tmv.tm_sec;
-    st->wMilliseconds = tv.tv_usec / 1000;
+    st->wMilliseconds = msec;
 }
 
 // Upstream sets the Windows system clock from FLEX time broadcasts. We keep an
@@ -112,7 +138,13 @@ void SetLocalTime(const SYSTEMTIME *st)
     tmv.tm_sec = st->wSecond;
     tmv.tm_isdst = -1;
     time_t target = mktime(&tmv);
-    if (target != (time_t)-1) g_clock_offset_s = (long)(target - time(nullptr));
+    if (target != (time_t)-1) {
+        time_t cur;
+        int ms;
+        g_clock_offset_s = 0;
+        clock_now(cur, ms);
+        g_clock_offset_s = (long)(target - cur);
+    }
 }
 
 bool FileExists(const char *file)
@@ -173,10 +205,8 @@ static void native_path(char *p)
         if (*p == '\\') *p = '/';
 }
 
-// ---- mail, tray: not part of the headless core -------------------------------------
+// ---- system tray: not part of the headless core ------------------------------------
 void SystemTrayWindow(bool) {}
-int MailInit(char *, char *, char *, char *, char *, char *, int, int) { return 0; }
-int SendMail(HWND, bool, bool, int, char *, char *, char *, char *, char *, char *, char *, char *) { return 0; }
 
 // ---- application hooks ----------------------------------------------------------
 static pdw::Decoder::MessageCallback g_on_message;
@@ -441,7 +471,8 @@ struct Decoder::Impl {
         int block_timer = (Profile.BlockDuplicate >> 4) * 60;
         if (block_timer) {
             while (aMessages[0][0] && (iSecondsElapsed > (aMessages[0][1] + block_timer))) {
-                memmove(aMessages[0], aMessages[1], sizeof(aMessages));
+                memmove(aMessages[0], aMessages[1], sizeof(aMessages) - sizeof(aMessages[0]));
+                memset(aMessages[999], 0, sizeof(aMessages[999]));
                 nCount_BlockBuffer[0]--;
             }
         }
@@ -466,6 +497,7 @@ struct Decoder::Impl {
             s += take;
             n -= take;
             total += take;
+            g_audio_seconds = (double)total / kSampleRate;
             if (pending.size() == kBufferSamples) {
                 ready.push_back(std::move(pending));
                 pending.clear();
@@ -497,6 +529,9 @@ Decoder::Decoder(const Config &cfg) : impl_(new Impl), cfg_(cfg)
     g_instance_alive = true;
 
     // ---- file layout, as upstream InitApplication() ----
+    g_clock_start = cfg.clock_start;
+    g_audio_seconds = 0;
+    g_clock_offset_s = 0;
     impl_->has_dir = !cfg.dir.empty();
     std::string dir = impl_->has_dir ? cfg.dir : (impl_->scratch = make_scratch_dir());
     while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
@@ -572,7 +607,18 @@ Decoder::Decoder(const Config &cfg) : impl_(new Impl), cfg_(cfg)
     sync_bit = low_audio;
     SetAudioConfig(Profile.audioConfig);
     Reset_ATB();
-    read_language_tables();
+
+    // language.df: from the PDW folder, else from the shipped data files.
+    {
+        char saved[MAX_PATH];
+        snprintf(saved, sizeof saved, "%s", szPath);
+        if (!impl_->has_dir || !FileExists((dir + "/language.df").c_str())) {
+            if (!cfg.resource_dir.empty()) snprintf(szPath, sizeof szPath, "%s", cfg.resource_dir.c_str());
+        }
+        read_language_tables();
+        snprintf(szPath, sizeof szPath, "%s", saved);
+    }
+    set_language(Profile.lang_mi_index);
 }
 
 Decoder::~Decoder()
@@ -583,6 +629,7 @@ Decoder::~Decoder()
     g_on_status = nullptr;
     pdw_set_sound_hook(nullptr);
     free_lang_tables();
+    MailInit(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0);   // stop the mail thread
     free(Pane1.buff_char); free(Pane1.buff_color);
     free(Pane2.buff_char); free(Pane2.buff_color);
     Pane1.buff_char = Pane2.buff_char = nullptr;
@@ -623,9 +670,29 @@ void Decoder::finish()
     impl_->push(tail.data(), tail.size());
     flush_notice();
     LogFileHandling(0, nullptr, 1 /* CLOSE_FILES */);
+    if (Profile.SMTP) MailFlush(15000);
     if (bUpdateFilters && impl_->has_dir) {  // as on exit in upstream
         WriteFilters(&Profile, 0);
         bUpdateFilters = false;
+    }
+}
+
+std::vector<std::string> Decoder::languages() const
+{
+    std::vector<std::string> v;
+    for (int i = 0; i < lang_cnt; i++) v.push_back(lang_name[i]);
+    return v;
+}
+
+// As upstream set_menu_items(): which table remaps characters, and whether text is reversed.
+void Decoder::set_language(int index)
+{
+    Profile.lang_mi_index = (index > lang_cnt || index < 0) ? 0 : index;
+    Profile.reverse_msg = FALSE;
+    Profile.lang_tbl_index = 0;
+    if (Profile.lang_mi_index) {
+        Profile.lang_tbl_index = Profile.lang_mi_index - 1;
+        Profile.reverse_msg = lang_rev[Profile.lang_tbl_index];
     }
 }
 
@@ -660,6 +727,24 @@ uint32_t Decoder::color_rgb(uint8_t c) const
             break;
     }
     return ((uint32_t)GetRValue(v) << 16) | ((uint32_t)GetGValue(v) << 8) | GetBValue(v);
+}
+
+Counters Decoder::counters() const
+{
+    Counters c;
+    c.messages = nCount_Messages; c.groupcalls = nCount_Groupcalls;
+    c.rejected = nCount_Rejected; c.blocked = nCount_Blocked;
+    c.missed_groupcalls = nCount_Missed[0]; c.missed_groupcall_messages = nCount_Missed[1];
+    c.block_buffer = nCount_BlockBuffer[0]; c.block_buffer_peak = nCount_BlockBuffer[1];
+    c.smtp_sessions = nSMTPsessions; c.smtp_mails = nSMTPemails; c.smtp_errors = nSMTPerrors;
+    c.smtp_last_error = g_smtp_last_error;
+    c.rx_quality = dRX_Quality;
+    for (int i = 0; i < 9; i++)
+        for (int k = 0; k < 2; k++) {
+            c.hourly_msgs[i][k] = hourly_stat[i][k]; c.hourly_chars[i][k] = hourly_char[i][k];
+            c.daily_msgs[i][k] = daily_stat[i][k]; c.daily_chars[i][k] = daily_char[i][k];
+        }
+    return c;
 }
 
 double Decoder::rx_quality() const { return dRX_Quality; }

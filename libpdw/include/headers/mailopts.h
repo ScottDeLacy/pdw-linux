@@ -26,3 +26,4 @@ int MailInit(char *host, char *helo_domain, char *from, char *to, char *user, ch
              int options);
 int SendMail(HWND response, bool match, bool monitor_only, int separate_smtp, char *capcode, char *time,
              char *date, char *mode, char *type, char *bitrate, char *message, char *label);
+void MailFlush(int timeout_ms);  // wait for queued mails to be sent

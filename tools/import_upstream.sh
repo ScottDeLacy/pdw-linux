@@ -12,8 +12,11 @@ mkdir -p "$SRC" "$INC"
 fix() {  # stdin -> stdout
   # Windows-1252 -> pure ASCII: the two char-literal bytes become explicit escapes
   # (works with any compiler/charset), stray high bytes in comments become '?'.
+  # `long double` is plain double: that is what the original (MSVC) used, and x87/80-bit or
+  # 128-bit long double (aarch64) would change the numerics and speed.
   sed -e 's/\r$//' \
       -e "s/'\xb7'/'\\\\xB7'/g" -e "s/'\xbb'/'\\\\xBB'/g" -e 's/[\x80-\xff]/?/g' \
+      -e 's/long double/double/g' \
       -e 's|#include <windows.h>|#include "compat/windows.h"|' \
       -e '/#include *<\(mmsystem\|commdlg\).h>/d' \
       -e '/#include *"\(headers\|utils\)\\/{s|\\|/|g}' \
@@ -31,6 +34,8 @@ done
 for h in pdw.h misc.h gfx.h sound_in.h initapp.h decode.h; do
   fix < "$UP/Headers/$h" > "$INC/$h"
 done
+# Upstream indexes iItemWidths[7] (the message column) one past its 7 elements.
+sed -i 's/iItemWidths\[7\]/iItemWidths[8]/' "$INC/gfx.h"
 
 # ---- Verbatim line-range extracts (pinned to one upstream commit) ----------
 PIN=6e18d3c92933398bc602de7252b590efce3ae88f
@@ -68,6 +73,9 @@ COMMON='#include "compat/windows.h"
 
 # Windows path separators in C string literals ("%s\\x") become '/'.
 PATHSED='s#\\\\#/#g'
+# Upstream bug: these move/clear sizeof(the whole 1000-entry array) starting at element i or 1, which
+# runs past the end of the array. Fixed to the intended sizes (shift entries down, clear the last).
+AMSGSED='s#memmove(aMessages\[0\], aMessages\[1\], sizeof(aMessages))#memmove(aMessages[0], aMessages[1], sizeof(aMessages) - sizeof(aMessages[0])), memset(aMessages[999], 0, sizeof(aMessages[999]))#;s#memset(aMessages\[i\], 0, sizeof(aMessages))#memset(aMessages[i], 0, sizeof(aMessages[i]))#'
 # Report each displayed message to the application (end of ShowMessage's label block).
 EMITSED='s#^\t\t}\t// end of filter label#&\n\t\tpdw_message_shown(bMONITOR, bFILTERED, bMONITOR_ONLY, iMatch, szCurrentLabel[0]);#'
 
@@ -99,7 +107,7 @@ void pdw_message_shown(bool monitor, bool filtered, bool monitor_only, int match
   '49,108' '111,112' '115,164' '167,182' '185,231' '238,296' \
   "380,584:$PATHSED" \
   "587,1333:$PATHSED;$EMITSED" \
-  "1336,1459" "1461,1538:$PATHSED" '1541,1549' '1551,1574' \
+  "1336,1459:$AMSGSED" "1461,1538:$PATHSED" '1541,1549' '1551,1574' \
   "1577,1716:$PATHSED" '1719,1928' '1931,2081' '2084,2165' \
   '2167,2233' '2236,2252' '2255,2271' '2274,2292' '2293,2470' \
   '2473,2678' '2679,2710' '2736,2742'
@@ -126,10 +134,10 @@ fix < "$UP/Headers/language.h" > "$INC/language.h"
 extract "$SRC/upstream_audio.cpp" "$COMMON" sound_in.cpp \
   '31,104:/^HWAVEIN/d;/^HWAVEOUT/d;/^WAVEHDR/d;/^HGLOBAL/d' '378,623' '849,1028'
 
-extract "$SRC/upstream_decode_globals.cpp" "$COMMON" decode.cpp '28,96' "685,750:$PATHSED"
+extract "$SRC/upstream_decode_globals.cpp" "$COMMON" decode.cpp '28,96' "685,750:$PATHSED;"'s#^\t\t\t\tif ((pStatFile = fopen#\t\t\t\tif (!FileExists(szLogPathName)) CreateDirectory(szLogPathName, NULL);\n&#'
 
 # Message-column geometry (in characters; the GUI front end scales by its font).
-extract "$SRC/upstream_gfx.cpp" "$COMMON" Gfx.cpp '33,55' '78,94' '661,746'
+extract "$SRC/upstream_gfx.cpp" "$COMMON" Gfx.cpp "33,55:s/iItemWidths\\[7\\]/iItemWidths[8]/" '78,94' '661,746'
 
 mkdir -p libpdw/include/utils
 fix < "$UP/utils/debug.h" > libpdw/include/utils/debug.h

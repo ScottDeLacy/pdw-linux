@@ -64,7 +64,7 @@ extern int PL1_SCount;
 extern int PL2_SCount;
 
 extern int iItemPositions[8];
-extern int iItemWidths[7];
+extern int iItemWidths[8];
 
 // Functions
 bool SetBoxFONT(void);

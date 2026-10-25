@@ -55,9 +55,9 @@ long atb_ctr;
 char atb_bit=0;
 int atb_value;
 int atb_len=0;
-long double WatchStep;
-long double clkt_hi = FINE_CLKT_HI;
-long double clkt_lo = FINE_CLKT_LO;
+double WatchStep;
+double clkt_hi = FINE_CLKT_HI;
+double clkt_lo = FINE_CLKT_LO;
 double WatchCtr;
 long BaudRate = 1600;	// default
 long last_baud_rate = 0;
@@ -109,7 +109,7 @@ void Audio_To_Bits(char *lpAudioBuffer, long LenAudioBuffer)
 		if (BaudRate != last_baud_rate)
 		{
 			// WatchStep is how often to check for bit in buffer
-			WatchStep = (long double) Profile.audioSampleRate / (long double) BaudRate;
+			WatchStep = (double) Profile.audioSampleRate / (double) BaudRate;
 
 			if (BaudRate > 2400)	// 3200 baud = 6400 FLEX.
 			{

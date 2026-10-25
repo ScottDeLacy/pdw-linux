@@ -31,7 +31,7 @@ int iItemPositions[8] = { 0,
 						  DIVIDER_OFFSET+300,	// Bitrate
 						  DIVIDER_OFFSET+390 };	// Message
 
-int iItemWidths[7] = { 0,
+int iItemWidths[8] = { 0,
 					  75,		// Address
 					  70,		// Time
 					  75,		// Date

@@ -43,6 +43,13 @@ struct Config {
     std::string dir;
     // Use this filters.ini instead of <dir>/filters.ini (read-only unless it is inside `dir`).
     std::string filters_file;
+    // Clock for message timestamps, statistics and block timers. 0: the wall clock (live use).
+    // Otherwise a Unix time at which the audio starts; the clock then advances with the audio,
+    // so decoding a recording stamps messages as if it were replayed in real time.
+    int64_t clock_start = 0;
+    // Folder with the data files shipped with PDW (language.df, base-ids.txt), used for files
+    // missing from `dir`.
+    std::string resource_dir;
 
     // Settings applied on top of pdw.ini, keyed by pdw.ini names ("Pocsag512", "FlexGroupMode",
     // "BlockDuplicate", ...), always in the [PDW] section.
@@ -62,6 +69,19 @@ struct Config {
     bool pocsag_show_both = false;         // PocsagShowBoth
     bool invert = false;           // InvertData: initial polarity; auto-corrected on sync
     bool flex_time = false;        // FlexTIME: use FLEX time broadcasts as program clock
+};
+
+// Running totals, as in PDW's statistics dialog.
+struct Counters {
+    int messages = 0, groupcalls = 0, rejected = 0, blocked = 0;
+    int missed_groupcalls = 0, missed_groupcall_messages = 0;
+    int block_buffer = 0, block_buffer_peak = 0;   // entries held by the duplicate-block timer
+    int smtp_sessions = 0, smtp_mails = 0, smtp_errors = 0;
+    std::string smtp_last_error;
+    double rx_quality = 100.0;                     // percent
+    // Hourly and daily message/character counts per mode, [mode][0 numeric / 1 alpha];
+    // mode order: FLEX 6400, 3200, 1600, POCSAG 2400, 1200, 512, ACARS, Mobitex, ERMES.
+    unsigned long hourly_msgs[9][2], hourly_chars[9][2], daily_msgs[9][2], daily_chars[9][2];
 };
 
 class Decoder {
@@ -95,12 +115,19 @@ public:
     // End of input: flush the last buffer, close logs, save filters.ini hit counters.
     void finish();
 
+    // Character-set tables from language.df; index 0 in set_language() is the default (no
+    // remapping), 1.. select languages()[i-1].
+    std::vector<std::string> languages() const;
+    void set_language(int index);
+
     // Write pdw.ini (all settings) and filters.ini into `dir`. Needs Config::dir.
     bool save_settings();
 
     // Colour (0xRRGGBB) PDW would paint a pane character with, for a colour index from
     // Message::colors or LineCallback::colors, using the current settings.
     uint32_t color_rgb(uint8_t color_index) const;
+
+    Counters counters() const;
 
     // Receive quality 0..100 (PDW's bit-error indicator).
     double rx_quality() const;

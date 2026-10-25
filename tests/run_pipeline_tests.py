@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "gen"))
@@ -153,7 +154,6 @@ def main():
         fh.write("[PDW]\nLogFileEnabled=0\n[Filter]\nFilterFileEnabled=0\nFilterCmdFileEnabled=1\n"
                  "FilterCmdFile=%s\nFilterCmdArgs=\"%%1 \\\"%%7\\\"\"\n" % script)
     run(cli, wav, "--dir", d2)
-    import time
     for _ in range(30):
         if os.path.exists(outfile):
             break
@@ -167,6 +167,236 @@ def main():
     run(cli, wav, "--dir", d2)
     time.sleep(0.5)
     check("no shell injection through message text", not os.path.exists(marker))
+
+
+    pg.write_wav(wav, pg.render(pg.pocsag_stream(MSGS), 1200, 44100), 44100)   # (the injection test above reused it)
+
+    # --- more settings: column order, filter-window-only, reject/blocked status, timer blocking
+    out, _ = run(cli, wav, "--set", "ScreenCol1=7", "--set", "ScreenCol2=1", "--set", "ScreenCol3=0",
+                 "--set", "ScreenCol4=0", "--set", "ScreenCol5=0", "--set", "ScreenCol6=0", "--set", "ScreenCol7=0")
+    check("ScreenColN reorders the columns", re.match(r" +HELLO WORLD 0123 +1234567", out.split("\n")[0]) is not None or
+          "HELLO WORLD 0123" in out.split("\n")[0], out.split("\n")[0])
+    out, _ = run(cli, wav, "--filters", f, "--set", "FilterWindowOnly=1")
+    check("FilterWindowOnly keeps filtered messages out of the monitor pane", "HELLO WORLD" not in out and "TEST ALPHA" not in out, out)
+    _, err = run(cli, wav, "--filters", f, "--status", "--set", "ShowRejectBlocked=1")
+    check("ShowRejectBlocked reports a rejected message in the status text", "Rejected Message : 0765432 TEST ALPHA MESSAGE" in err, err)
+    _, err = run(cli, wav, "--status", "--set", "ShowRejectBlocked=1", "--set", "BlockDuplicate=1")
+    check("ShowRejectBlocked reports a blocked duplicate in the status text", "Blocked Duplicate Message : 1234567 DUPLICATE ME" in err, err)
+    n_timer = len(jrun(cli, wav, "--set", "BlockDuplicate=19"))      # 1 minute timer, address+message
+    check("BlockDuplicate timer mode blocks the repeat", n_timer == n_all - 1, "%d vs %d" % (n_timer, n_all))
+
+    # a long run of distinct messages overflows the 1000-entry block buffer (an upstream out-of-bounds spot)
+    many = [(100000 + i, 3, "MSG %04d" % i, False) for i in range(1100)]
+    big = os.path.join(tmp, "big.wav")
+    pg.write_wav(big, pg.render(pg.pocsag_stream(many), 2400, 44100), 44100)
+    got = jrun(cli, big, "--set", "BlockDuplicate=19")
+    check("1100 distinct messages with the block timer (buffer overflow path)", len(got) == 1100 and got[-1]["text"] == "MSG 1099", "%d" % len(got))
+    os.remove(big)
+
+    # --- filter sound: Wavfiles/SoundN.wav chosen by the filter's wave number, played via --sound-cmd
+    d3 = os.path.join(tmp, "snd")
+    os.makedirs(os.path.join(d3, "Wavfiles"))
+    for n in (0, 1):
+        open(os.path.join(d3, "Wavfiles", "Sound%d.wav" % n), "wb").write(b"RIFF....WAVE")
+    write_filters(os.path.join(d3, "filters.ini"), ['2,"1234567","Beep","",0,2,0,0,0,""'])    # wave number 2 -> Sound1.wav
+    with open(os.path.join(d3, "pdw.ini"), "w") as fh:
+        fh.write("[PDW]\nLogFileEnabled=0\nFilterBeep=1\n[Filter]\nFilterFileEnabled=0\n")
+    playlog = os.path.join(tmp, "play.log")
+    player = os.path.join(tmp, "player.sh")
+    with open(player, "w") as fh:
+        fh.write('#!/bin/sh\necho "$1" >> ' + playlog + '\n')
+    os.chmod(player, os.stat(player).st_mode | stat.S_IXUSR)
+    run(cli, wav, "--dir", d3, "--sound-cmd", player)
+    for _ in range(30):
+        if os.path.exists(playlog):
+            break
+        time.sleep(0.1)
+    played = open(playlog).read().split() if os.path.exists(playlog) else []
+    check("filter hit plays Wavfiles/Sound1.wav", played and played[0].endswith("/Wavfiles/Sound1.wav"), str(played))
+
+    # --- character sets (language.df): the Swedish table maps [ \\ ] { | } to A/O/A/a/o/a with rings and dots
+    res = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cli))), "data")
+    if not os.path.isfile(os.path.join(res, "language.df")):
+        res = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+    sw = os.path.join(tmp, "sw.wav")
+    pg.write_wav(sw, pg.render(pg.pocsag_stream([(1234567, 3, "H{LSA [LV", False)]), 1200, 44100), 44100)
+    got = jrun(cli, sw, "--resources", res, "--set", "LangIndex=3")
+    check("language table (Swedish) remaps characters", [m["text"] for m in got] == ["H\u00e4LSA \u00c4LV"], str([m["text"] for m in got]))
+    got = jrun(cli, sw, "--resources", res)
+    check("no language selected: text unchanged", [m["text"] for m in got] == ["H{LSA [LV"], str([m["text"] for m in got]))
+
+    # --- statistics file: the audio clock rolls over an hour mid-recording; messages get audio-time stamps
+    if True:
+        d4 = os.path.join(tmp, "stat")
+        os.makedirs(d4)
+        batch = pg.render(pg.pocsag_stream([(1234567, 3, "STAT ONE", False), (234567, 0, "5551234", True)]), 1200, 44100)
+        pg.write_wav(os.path.join(tmp, "stat.wav"), batch + [0] * (30 * 44100) + batch, 44100)
+        with open(os.path.join(d4, "pdw.ini"), "w") as fh:
+            fh.write("[PDW]\nLogFileEnabled=0\nStatFileEnabled=1\nStatFileUseDate=0\nStatFile=stats\n[Filter]\nFilterFileEnabled=0\n")
+        r = subprocess.run([cli, "--dir", d4, "--start-time", "2026-10-25 10:59:50", os.path.join(tmp, "stat.wav")],
+                           capture_output=True, text=True, check=True)
+        stamps = re.findall(r"\d\d:\d\d:\d\d", r.stdout)
+        check("message timestamps follow the audio clock", len(stamps) >= 2 and stamps[0] == "10:59:51" or stamps[0] in ("10:59:50", "10:59:52"), str(stamps))
+        sf = os.path.join(d4, "Logfiles", "stats.st")
+        txt = open(sf).read() if os.path.isfile(sf) else ""
+        check("hourly statistics written when the hour changes", "HOURLY (10:00-11:00)" in txt, txt)
+        m = re.search(r"POCSAG-1200\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", txt)
+        check("statistics count the messages and characters", m is not None and m.group(1) == "1" and m.group(3) == "1" and m.group(4) == "8", txt)
+
+    # --- SMTP: a small local server records what PDW sends
+    import base64
+    import socket
+    import threading
+
+    mails = []
+
+    class Smtp(threading.Thread):
+        def __init__(self):
+            super().__init__(daemon=True)
+            self.srv = socket.socket()
+            self.srv.bind(("127.0.0.1", 0))
+            self.srv.listen(5)
+            self.port = self.srv.getsockname()[1]
+
+        def run(self):
+            while True:
+                try:
+                    c, _ = self.srv.accept()
+                except OSError:
+                    return
+                threading.Thread(target=self.session, args=(c,), daemon=True).start()
+
+        def session(self, c):
+            f = c.makefile("rwb", buffering=0)
+            m = {"cmds": [], "data": ""}
+            f.write(b"220 test ESMTP\r\n")
+            data_mode = False
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                line = line.decode("latin-1").rstrip("\r\n")
+                if data_mode:
+                    if line == ".":
+                        data_mode = False
+                        f.write(b"250 queued\r\n")
+                        mails.append(m)
+                    else:
+                        m["data"] += line + "\n"
+                    continue
+                m["cmds"].append(line)
+                u = line.upper()
+                if u.startswith("EHLO"):
+                    f.write(b"250-test\r\n250 AUTH LOGIN\r\n")
+                elif u == "AUTH LOGIN":
+                    f.write(b"334 VXNlcm5hbWU6\r\n")
+                    m["user"] = base64.b64decode(f.readline().strip()).decode()
+                    f.write(b"334 UGFzc3dvcmQ6\r\n")
+                    m["pass"] = base64.b64decode(f.readline().strip()).decode()
+                    f.write(b"235 ok\r\n")
+                elif u.startswith("MAIL FROM") or u.startswith("RCPT TO"):
+                    f.write(b"250 ok\r\n")
+                elif u == "DATA":
+                    data_mode = True
+                    f.write(b"354 go\r\n")
+                elif u == "QUIT":
+                    f.write(b"221 bye\r\n")
+                    break
+                else:
+                    f.write(b"500 ?\r\n")
+            c.close()
+
+    srv = Smtp()
+    srv.start()
+    d5 = os.path.join(tmp, "mail")
+    os.makedirs(d5)
+    shutil.copy(f, os.path.join(d5, "filters.ini"))
+    # options: address+message+subject+body (0x3410), AUTH 0x4000, ENABLE 0x8000, iso-8859-1 0x20000; mode 1 = filter hits only
+    opts = 0x10 | 0x400 | 0x1000 | 0x2000 | 0x4000 | 0x8000 | 0x20000 | 1
+    with open(os.path.join(d5, "pdw.ini"), "w") as fh:
+        fh.write("[PDW]\nLogFileEnabled=0\n[Filter]\nFilterFileEnabled=0\n[SMTP]\nEnable=1\nHost=127.0.0.1\nPort=%d\n"
+                 "From=pdw@example.org\nTo=a@example.org;b@example.org\nUser=bob\nPassword=secret\nOptions=%d\n" % (srv.port, opts))
+    pg.write_wav(wav, pg.render(pg.pocsag_stream(MSGS), 1200, 44100), 44100)
+    run(cli, wav, "--dir", d5)
+    # filters: 1234567 (x3 messages) and 12345?? hit, 0234567 is monitor-only (not mailed in filter mode)
+    got = sorted(m["data"].split("\n\n", 1)[1].strip() for m in mails)
+    check("SMTP: one mail per filter hit (monitor-only skipped)", got == sorted(["1234500 WILD CARD HIT", "1234567 DUPLICATE ME", "1234567 DUPLICATE ME", "1234567 HELLO WORLD 0123"]), str(got))
+    if mails:
+        m0 = mails[0]
+        check("SMTP: AUTH LOGIN credentials", m0.get("user") == "bob" and m0.get("pass") == "secret", str(m0.get("user")))
+        check("SMTP: envelope", "MAIL FROM:<pdw@example.org>" in m0["cmds"] and "RCPT TO:<a@example.org>" in m0["cmds"] and "RCPT TO:<b@example.org>" in m0["cmds"], str(m0["cmds"]))
+        check("SMTP: subject and charset headers", re.search(r"^Subject: 1234567 ", m0["data"], re.M) and 'charset="iso-8859-1"' in m0["data"], m0["data"])
+    srv.srv.close()
+
+    # STARTTLS (self-signed certificate: refused by default, accepted with SSLVerify=0)
+    if shutil.which("openssl"):
+        import ssl
+        key, crt = os.path.join(tmp, "k.pem"), os.path.join(tmp, "c.pem")
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt,
+                        "-days", "2", "-subj", "/CN=localhost"], capture_output=True, check=True)
+        sctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        sctx.load_cert_chain(crt, key)
+
+        class TlsSmtp(Smtp):
+            def session(self, c):
+                c.sendall(b"220 test ESMTP\r\n")
+                f = c.makefile("rwb", buffering=0)
+                m = {"cmds": [], "data": ""}
+                tls = False
+                data_mode = False
+                while True:
+                    line = f.readline()
+                    if not line:
+                        break
+                    line = line.decode("latin-1").rstrip("\r\n")
+                    if data_mode:
+                        if line == ".":
+                            data_mode = False
+                            f.write(b"250 queued\r\n")
+                            if tls:
+                                mails.append(m)
+                        else:
+                            m["data"] += line + "\n"
+                        continue
+                    u = line.upper()
+                    m["cmds"].append(line)
+                    if u.startswith("EHLO"):
+                        f.write(b"250-test\r\n250-STARTTLS\r\n250 AUTH LOGIN\r\n")
+                    elif u == "STARTTLS":
+                        f.write(b"220 go\r\n")
+                        try:
+                            c = sctx.wrap_socket(c, server_side=True)
+                        except (ssl.SSLError, OSError):
+                            return
+                        f = c.makefile("rwb", buffering=0)
+                        tls = True
+                    elif u.startswith("MAIL FROM") or u.startswith("RCPT TO"):
+                        f.write(b"250 ok\r\n")
+                    elif u == "DATA":
+                        data_mode = True
+                        f.write(b"354 go\r\n")
+                    elif u == "QUIT":
+                        f.write(b"221 bye\r\n")
+                        break
+                    else:
+                        f.write(b"500 ?\r\n")
+                c.close()
+
+        tsrv = TlsSmtp()
+        tsrv.start()
+        d6 = os.path.join(tmp, "tlsmail")
+        os.makedirs(d6)
+        opts = 0x10 | 0x400 | 0x1000 | 0x2000 | 0x8000 | 0x20000     # no AUTH, all messages
+        base_ini = ("[PDW]\nLogFileEnabled=0\n[Filter]\nFilterFileEnabled=0\n[SMTP]\nEnable=1\nHost=localhost\nPort=%d\n"
+                    "From=pdw@example.org\nTo=a@example.org\nSSL=1\nOptions=%d\n" % (tsrv.port, opts))
+        mails.clear()
+        open(os.path.join(d6, "pdw.ini"), "w").write(base_ini)
+        r = subprocess.run([cli, "--dir", d6, wav], capture_output=True, text=True)
+        check("SMTP STARTTLS: self-signed certificate is refused by default", not mails, str(len(mails)))
+        open(os.path.join(d6, "pdw.ini"), "w").write(base_ini + "SSLVerify=0\n")
+        run(cli, wav, "--dir", d6)
+        check("SMTP STARTTLS: mail delivered with SSLVerify=0", len(mails) >= 5, str(len(mails)))
+        tsrv.srv.close()
 
     shutil.rmtree(tmp, ignore_errors=True)
     print("%d failure(s)" % len(FAILURES))

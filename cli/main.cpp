@@ -1,11 +1,14 @@
 // pdw-cli: decode POCSAG/FLEX pager traffic from FM-discriminator audio.
 // Based on PDW by Jason Petty and Peter Hunt (GPL-3.0-or-later). See NOTICE.
+#include <signal.h>
 #include <unistd.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <memory>
 #include <string>
+#include <vector>
 #include "pdw/decoder.hpp"
 #include "wav.hpp"
 
@@ -33,9 +36,33 @@ static void usage(FILE *o)
         "  --color[=never]  ANSI colours as PDW paints them (default: only on a terminal)\n"
         "  --json           one JSON object per message instead of pane lines\n"
         "  --notices        also print decoder notices to stderr\n"
+        "  --stats          print message counts and receive quality to stderr at the end\n"
         "  --status         also print the title-bar status text to stderr\n"
+        "  --start-time T   timestamp the audio as starting at T (\"YYYY-MM-DD HH:MM:SS\", local time);\n"
+        "                   the clock then follows the audio. Default for WAV files: now; for stdin: wall clock.\n"
+        "  --wall-clock     use the real clock even for WAV files\n"
+        "  --record FILE    also save the incoming audio to a 16-bit mono WAV file\n"
+        "  --sound-cmd CMD  play filter sounds with CMD <file.wav> (default: paplay/aplay/afplay)\n"
+        "  --resources DIR  folder with language.df and base-ids.txt (default: searched for)\n"
         "  -h, --help\n",
         o);
+}
+
+// Where the shipped data files live: $PDW_DATA_DIR, <exe>/../share/pdw, or the source tree's data/.
+static std::string find_resources(const char *argv0)
+{
+    std::vector<std::string> cand;
+    if (const char *e = getenv("PDW_DATA_DIR")) cand.push_back(e);
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    std::string dir = argv0;
+    if (n > 0) dir.assign(exe, (size_t)n);
+    size_t slash = dir.rfind('/');
+    dir = slash == std::string::npos ? "." : dir.substr(0, slash);
+    for (const char *rel : {"/../share/pdw", "/../../data", "/../data", "/data"}) cand.push_back(dir + rel);
+    for (auto &c : cand)
+        if (access((c + "/language.df").c_str(), R_OK) == 0) return c;
+    return "";
 }
 
 static std::string json_escape(const std::string &s)
@@ -51,11 +78,13 @@ static std::string json_escape(const std::string &s)
 
 int main(int argc, char **argv)
 {
+    signal(SIGCHLD, SIG_IGN);  // sound/command children are never waited for
     pdw::Config cfg;
     double rate = 22050, gain = 1.0;
-    bool json = false, notices = false, status = false, filtered = false, save = false;
+    bool stats = false, json = false, notices = false, status = false, filtered = false, save = false;
     int color = isatty(STDOUT_FILENO) ? 1 : 0;
-    std::string input;
+    std::string input, record, sound_cmd;
+    bool wall_clock = false;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -86,10 +115,22 @@ int main(int argc, char **argv)
             cfg.ini[kv.substr(0, eq)] = kv.substr(eq + 1);
         }
         else if (a == "--save-settings") save = true;
+        else if (a == "--record") record = need("--record");
+        else if (a == "--wall-clock") wall_clock = true;
+        else if (a == "--start-time") {
+            struct tm tmv {};
+            const char *v = need("--start-time");
+            if (!strptime(v, "%Y-%m-%d %H:%M:%S", &tmv)) { fprintf(stderr, "--start-time: expected YYYY-MM-DD HH:MM:SS\n"); return 2; }
+            tmv.tm_isdst = -1;
+            cfg.clock_start = (int64_t)mktime(&tmv);
+        }
+        else if (a == "--sound-cmd") sound_cmd = need("--sound-cmd");
+        else if (a == "--resources") cfg.resource_dir = need("--resources");
         else if (a == "--filtered") filtered = true;
         else if (a == "--color") color = 1;
         else if (a == "--color=never") color = 0;
         else if (a == "--status") status = true;
+        else if (a == "--stats") stats = true;
         else if (a == "--json") json = true;
         else if (a == "--notices") notices = true;
         else if (a == "-" || a[0] != '-') input = a;
@@ -97,6 +138,9 @@ int main(int argc, char **argv)
     }
     if (input.empty()) { usage(stderr); return 2; }
     if (rate <= 0 || gain <= 0) { fprintf(stderr, "--rate and --gain must be positive\n"); return 2; }
+
+    if (!cfg.clock_start && input != "-" && !wall_clock) cfg.clock_start = (int64_t)time(nullptr);
+    if (cfg.resource_dir.empty()) cfg.resource_dir = find_resources(argv[0]);
 
     std::unique_ptr<pdw::Decoder> decp;
     try {
@@ -136,18 +180,30 @@ int main(int argc, char **argv)
             fflush(stdout);
         });
     }
+    if (!sound_cmd.empty()) {
+        dec.on_sound([sound_cmd](const std::string &wav) {
+            std::string cmd = sound_cmd + " '" + wav + "'";
+            if (fork() == 0) { setsid(); execl("/bin/sh", "sh", "-c", cmd.c_str(), (char *)nullptr); _exit(127); }
+        });
+    }
     if (notices) dec.on_notice([](const std::string &n) { fprintf(stderr, "[notice]%s\n", n.c_str()); });
     if (status) dec.on_status([](const std::string &t) { fprintf(stderr, "[status]%s\n", t.c_str()); });
 
     pdw::Resampler rs(rate);
     std::vector<int16_t> chunk, out;
+    wav::Writer recorder;
     auto feed = [&](const int16_t *p, size_t n) {
+        recorder.write(p, n);
         if (rate == pdw::kSampleRate) { dec.feed_s16(p, n, (float)gain); return; }
         out.clear();
         rs.process(p, n, out);
         dec.feed_s16(out.data(), out.size(), (float)gain);
     };
 
+    if (!record.empty() && !recorder.open(record, rate)) {
+        fprintf(stderr, "pdw-cli: cannot write %s\n", record.c_str());
+        return 1;
+    }
     if (input == "-") {
         int16_t buf[4096];
         size_t carry = 0;
@@ -166,9 +222,18 @@ int main(int argc, char **argv)
         if (!wav::read(input, a, err)) { fprintf(stderr, "pdw-cli: %s\n", err.c_str()); return 1; }
         rate = a.rate;
         rs = pdw::Resampler(rate);
+        if (!record.empty()) { recorder.close(); recorder.open(record, rate); }
         feed(a.samples.data(), a.samples.size());
     }
     dec.finish();
+    if (stats) {
+        pdw::Counters c = dec.counters();
+        fprintf(stderr, "messages %d  group calls %d  rejected %d  blocked %d  missed group calls %d  rx quality %.1f%%\n",
+                c.messages, c.groupcalls, c.rejected, c.blocked, c.missed_groupcalls, c.rx_quality);
+        if (c.smtp_sessions || c.smtp_errors)
+            fprintf(stderr, "smtp: %d mails in %d sessions, %d errors%s%s\n", c.smtp_mails, c.smtp_sessions, c.smtp_errors,
+                    c.smtp_last_error.empty() ? "" : ", last: ", c.smtp_last_error.c_str());
+    }
     if (save && !dec.save_settings()) fprintf(stderr, "pdw-cli: --save-settings needs --dir\n");
     return 0;
 }
