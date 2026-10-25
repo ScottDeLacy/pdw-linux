@@ -20,6 +20,8 @@ static void usage(FILE *o)
         "      rtl_fm -f 152.4M -M fm -s 22050 -g 40 | pdw-cli --rate 22050 -\n"
         "options:\n"
         "  --rate HZ        sample rate of raw stdin input (default 22050)\n"
+        "  --dc-block[=HZ]  remove the DC offset of FM audio (default 0.2 Hz; on for stdin, off for files)\n"
+        "  --no-dc-block    never remove DC\n"
         "  --gain X         input gain multiplier (default 1.0)\n"
         "  --config N       audio level preset 1-13, as PDW's Interface dialog (default 5)\n"
         "  --no-pocsag      disable POCSAG        --no-flex  disable FLEX\n"
@@ -80,7 +82,7 @@ int main(int argc, char **argv)
 {
     signal(SIGCHLD, SIG_IGN);  // sound/command children are never waited for
     pdw::Config cfg;
-    double rate = 22050, gain = 1.0;
+    double rate = 22050, gain = 1.0, dc_hz = 0;   // 0: automatic (on for stdin)
     bool stats = false, json = false, notices = false, status = false, filtered = false, save = false;
     int color = isatty(STDOUT_FILENO) ? 1 : 0;
     std::string input, record, sound_cmd;
@@ -95,6 +97,9 @@ int main(int argc, char **argv)
         if (a == "-h" || a == "--help") { usage(stdout); return 0; }
         else if (a == "--rate") rate = atof(need("--rate"));
         else if (a == "--gain") gain = atof(need("--gain"));
+        else if (a == "--dc-block") dc_hz = 0.2;
+        else if (a.rfind("--dc-block=", 0) == 0) dc_hz = atof(a.c_str() + 11);
+        else if (a == "--no-dc-block") dc_hz = -1;
         else if (a == "--config") cfg.audio_config = atoi(need("--config"));
         else if (a == "--no-pocsag") cfg.decode_pocsag = false;
         else if (a == "--no-flex") cfg.decode_flex = false;
@@ -192,8 +197,15 @@ int main(int argc, char **argv)
     pdw::Resampler rs(rate);
     std::vector<int16_t> chunk, out;
     wav::Writer recorder;
+    std::unique_ptr<pdw::DcBlocker> dcb;
     auto feed = [&](const int16_t *p, size_t n) {
         recorder.write(p, n);
+        if (dcb) {
+            static std::vector<int16_t> tmp;
+            tmp.assign(p, p + n);
+            dcb->process(tmp.data(), n);
+            p = tmp.data();
+        }
         if (rate == pdw::kSampleRate) { dec.feed_s16(p, n, (float)gain); return; }
         out.clear();
         rs.process(p, n, out);
@@ -205,6 +217,8 @@ int main(int argc, char **argv)
         return 1;
     }
     if (input == "-") {
+        if (dc_hz == 0) dc_hz = 0.2;
+        if (dc_hz > 0) dcb.reset(new pdw::DcBlocker(rate, dc_hz));
         int16_t buf[4096];
         size_t carry = 0;
         uint8_t raw[8192];
@@ -222,6 +236,7 @@ int main(int argc, char **argv)
         if (!wav::read(input, a, err)) { fprintf(stderr, "pdw-cli: %s\n", err.c_str()); return 1; }
         rate = a.rate;
         rs = pdw::Resampler(rate);
+        if (dc_hz > 0) dcb.reset(new pdw::DcBlocker(rate, dc_hz));
         if (!record.empty()) { recorder.close(); recorder.open(record, rate); }
         feed(a.samples.data(), a.samples.size());
     }

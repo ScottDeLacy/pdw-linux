@@ -222,4 +222,17 @@ private:
     size_t fed_ = 0;
 };
 
+// High-pass filter that removes the DC offset of FM-demodulated audio (a tuning error shifts the
+// whole signal; the slicer needs it centred). The default corner is slow enough not to disturb
+// long runs of equal bits: a 100 ms run loses about 12 %.
+class DcBlocker {
+public:
+    explicit DcBlocker(double sample_rate, double cutoff_hz = 0.2);
+    void process(int16_t *samples, size_t n);   // in place
+
+private:
+    double r_;
+    double x1_ = 0, y1_ = 0;
+};
+
 }  // namespace pdw

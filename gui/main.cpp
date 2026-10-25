@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QFile>
 #include <QStandardPaths>
 #include <QTimer>
 #include <cstdio>
@@ -42,7 +43,9 @@ int main(int argc, char **argv)
     p.addOption({"rtl", "tune an RTL-SDR dongle with rtl_fm to this frequency (MHz)", "mhz"});
     p.addOption({"dialog-shots", "write a PNG of every dialog into this folder and exit", "dir"});
     p.addOption({"selftest", "open every dialog, save pictures into this folder, check that OK changes nothing", "dir"});
-    p.addOption({"screenshot", "after --play finishes, save the window as PNG and exit", "png"});
+    p.addOption({"rtl-program", "program to run instead of rtl_fm (for tests)", "path"});
+    p.addOption({"screenshot", "when the input ends, save the window as PNG and exit", "png"});
+    p.addOption({"dump-panes", "when the input ends, write the text of both panes to this file and exit", "file"});
     p.process(app);
 
     if (p.isSet("dialog-shots")) {
@@ -61,17 +64,23 @@ int main(int argc, char **argv)
     MainWindow w(cfg);
     w.show();
     if (p.isSet("selftest")) return selfTest(w, p.value("selftest"));
+    if (p.isSet("screenshot") || p.isSet("dump-panes")) {
+        // when the input ends: give the panes a moment to paint, then save what was asked for and quit
+        QObject::connect(&w, &MainWindow::inputFinished, [&] {
+            QTimer::singleShot(300, [&] {
+                if (p.isSet("screenshot")) w.grab().save(p.value("screenshot"));
+                if (p.isSet("dump-panes")) {
+                    QFile f(p.value("dump-panes"));
+                    if (f.open(QIODevice::WriteOnly))
+                        f.write((w.monitorPane()->allText() + "\n----\n" + w.filterPane()->allText() + "\n").toUtf8());
+                }
+                w.saveForExit();
+                QCoreApplication::exit(0);
+            });
+        });
+    }
     if (p.isSet("play")) {
         w.playFile(p.value("play"), !p.isSet("fast"));
-        if (p.isSet("screenshot")) {
-            // wait for the file to end, give the panes a moment to paint, grab, quit
-            QObject::connect(&w, &MainWindow::inputFinished, [&] {
-                QTimer::singleShot(300, [&] {
-                    w.grab().save(p.value("screenshot"));
-                    QApplication::quit();
-                });
-            });
-        }
     } else if (p.isSet("stdin")) {
         w.useStdin(p.value("rate").toDouble());
     } else if (p.isSet("rtl")) {
@@ -86,6 +95,7 @@ int main(int argc, char **argv)
         rp.program = gs.value("rtl/program", "rtl_fm").toString();
         rp.extra = gs.value("rtl/extra", "").toString();
         rp.mode = gs.value("rtl/mode", "fm").toString();
+        if (p.isSet("rtl-program")) rp.program = p.value("rtl-program");
         w.useRtlFm(rp);
     } else {
         // resume what was used last time

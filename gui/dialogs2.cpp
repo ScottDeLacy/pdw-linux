@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QGridLayout>
 #include <QListWidget>
 #include <QSpinBox>
@@ -112,6 +113,12 @@ bool setup(MainWindow *w)
     QObject::connect(custom, &QPushButton::clicked, &d, [&] { customAudio(w, &d); config->setCurrentIndex(0); });
     auto *invert = new QCheckBox("Invert data (opposite polarity)");
     invert->setChecked(geti(dec, "InvertData"));
+    auto *dcblock = new QCheckBox("Remove DC offset of live audio (recommended for rtl_fm)");
+    dcblock->setChecked(gs.value("input/dcblock", true).toBool());
+    auto *igain = new QDoubleSpinBox;
+    igain->setRange(0.1, 50.0);
+    igain->setSingleStep(0.5);
+    igain->setValue(gs.value("input/gain", 1.0).toDouble());
 
     int r = 0;
     auto *gIn = new QGroupBox("Input");
@@ -137,6 +144,9 @@ bool setup(MainWindow *w)
     auto *cl = new QGridLayout(gCfg);
     cl->addWidget(new QLabel("Configuration"), 0, 0); cl->addWidget(config, 0, 1); cl->addWidget(custom, 0, 2);
     cl->addWidget(invert, 1, 0, 1, 3);
+    cl->addWidget(dcblock, 2, 0, 1, 3);
+    cl->addWidget(new QLabel("Input gain"), 3, 0);
+    cl->addWidget(igain, 3, 1);
     grid->addWidget(gCfg, r++, 0, 1, 2);
 
     auto sync = [&] {
@@ -167,6 +177,8 @@ bool setup(MainWindow *w)
     }
     seti(dec, "AudioConfiguration", config->currentIndex());
     seti(dec, "InvertData", invert->isChecked());
+    gs.setValue("input/dcblock", dcblock->isChecked());
+    gs.setValue("input/gain", igain->value());
     gs.setValue("input/kind", rtl->isChecked() ? "rtl" : dev->isChecked() ? "device" : "none");
     gs.setValue("rtl/mhz", freq->text());
     gs.setValue("rtl/mode", rmode->currentText());

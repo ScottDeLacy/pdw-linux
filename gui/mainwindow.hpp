@@ -38,6 +38,7 @@ public:
     void setPaused(bool p);
     bool paused() const { return paused_; }
     void updateTray();
+    void saveForExit();       // what closing the window does besides closing it
     QString startedText() const;
     QString inputDescription() const;
     void startRecording(const QString &path);
@@ -66,6 +67,7 @@ private:
     QMenu *lang_menu_ = nullptr;
     std::unique_ptr<InputSource> src_;
     std::unique_ptr<pdw::Resampler> resampler_;
+    std::unique_ptr<pdw::DcBlocker> dc_;
     double src_rate_ = 0;
     bool paused_ = false;
     int64_t started_ = 0;

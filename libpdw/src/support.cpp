@@ -1046,6 +1046,20 @@ std::string Decoder::status_text() const
 double Decoder::rx_quality() const { return dRX_Quality; }
 size_t Decoder::filter_count() const { return Profile.filters.size(); }
 
+// ---- DcBlocker ------------------------------------------------------------------------------------
+DcBlocker::DcBlocker(double rate, double cutoff_hz) : r_(std::exp(-2.0 * M_PI * cutoff_hz / rate)) {}
+
+void DcBlocker::process(int16_t *s, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        const double x = s[i];
+        const double y = x - x1_ + r_ * y1_;
+        x1_ = x;
+        y1_ = y;
+        s[i] = (int16_t)std::max(-32768.0, std::min(32767.0, std::round(y)));
+    }
+}
+
 // ---- Resampler ------------------------------------------------------------------
 Resampler::Resampler(double in_rate, double out_rate) : step_(in_rate / out_rate) {}
 

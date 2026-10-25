@@ -47,6 +47,14 @@ def case_pocsag(tmp, cli, baud, rate, invert, noise):
     return wav, got_tuples(run_cli(cli, wav)), POCSAG_EXPECT
 
 
+def case_dc(tmp, cli):
+    """FM audio of a mistuned receiver sits on a DC offset; --dc-block must remove it."""
+    wav = os.path.join(tmp, "dc.wav")
+    audio = pg.render(pg.pocsag_stream(POCSAG_MSGS), 1200, 44100)
+    pg.write_wav(wav, [max(-32768, min(32767, v + 4500)) for v in audio], 44100)
+    return wav, got_tuples(run_cli(cli, wav, ("--dc-block",))), POCSAG_EXPECT
+
+
 def case_flex(tmp, cli, rate, invert, noise):
     wav = os.path.join(tmp, "f_%d_%s.wav" % (rate, "i" if invert else "n"))
     segs = pg.flex_frame_symbols("1600/2", {"A": [{"kind": "alpha", "capcode": 1234567, "text": "FLEX TEST MESSAGE"}]})
@@ -81,6 +89,7 @@ def main():
         for invert in (False, True):
             cases.append(("flex-1600 %dHz %s" % (rate, "inverted" if invert else "normal"),
                           lambda r=rate, i=invert: case_flex(tmp, cli, r, i, 0.0), "flex", 1600, invert))
+    cases.append(("pocsag-1200 DC offset + --dc-block", lambda: case_dc(tmp, cli), "pocsag", 1200, False))
     cases.append(("pocsag-1200 noisy", lambda: case_pocsag(tmp, cli, 1200, 44100, False, 400.0), "pocsag", 1200, False))
     cases.append(("flex-1600 noisy", lambda: case_flex(tmp, cli, 44100, False, 400.0), "flex", 1600, False))
 

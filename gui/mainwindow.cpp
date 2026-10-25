@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QGuiApplication>
 #include <QDesktopServices>
 #include <QFileDialog>
 #include <QFontDialog>
@@ -19,6 +20,7 @@
 #include <QDir>
 #include <QStandardPaths>
 #include "dialogs.hpp"
+#include "guisettings.hpp"
 #include "generated/rc_data.h"
 #include "generated/rc_ids.h"
 
@@ -586,10 +588,19 @@ void MainWindow::onSamples(const QByteArray &s16, double rate)
     const size_t n = size_t(s16.size()) / 2;
     if (recorder_.isOpen()) recorder_.write(p, n);
     if (paused_) return;
-    const float gain = 1.0f;
+    auto &gs = guiSettings();
+    const float gain = (float)gs.value("input/gain", 1.0).toDouble();
     if (!resampler_ || src_rate_ != rate) {
         resampler_.reset(rate == pdw::kSampleRate ? nullptr : new pdw::Resampler(rate));
+        dc_.reset();
         src_rate_ = rate;
+    }
+    std::vector<int16_t> buf;
+    if (src_ && src_->live() && gs.value("input/dcblock", true).toBool()) {   // FM audio carries a DC offset when tuned off-centre
+        if (!dc_) dc_.reset(new pdw::DcBlocker(rate));
+        buf.assign(p, p + n);
+        dc_->process(buf.data(), n);
+        p = buf.data();
     }
     if (!resampler_) {
         dec_->feed_s16(p, n, gain);
@@ -655,15 +666,21 @@ void MainWindow::updateTray()
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
-    if (dec_->get_int("ConfirmExit") && QMessageBox::question(this, tr("PDW"), tr("Exit PDW?")) != QMessageBox::Yes) {
+    if (!qGuiApp->isSavingSession() && dec_->get_int("ConfirmExit") &&
+        QMessageBox::question(this, tr("PDW"), tr("Exit PDW?")) != QMessageBox::Yes) {
         e->ignore();
         return;
     }
+    saveForExit();
+    e->accept();
+}
+
+void MainWindow::saveForExit()
+{
     saveWindowState();
     stopInput();
     dec_->finish();
     if (!cfg_.dir.empty()) dec_->save_settings();
-    e->accept();
 }
 
 void MainWindow::saveWindowState()
