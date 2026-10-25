@@ -126,8 +126,18 @@ extract "$SRC/upstream_settings.cpp" "$COMMON
 static char szTEMP[MAX_STR_LEN];
 static int iTEMP;
 static bool bWin9x = false;
-int CompareCapcodes(char *szCapcode1, char *szCapcode2);" PDW.cpp \
-  '9456,9683' '9686,9937' '9939,10130' '10133,10251' '10907,10916'
+int CompareCapcodes(char *szCapcode1, char *szCapcode2);
+// Upstream wrote strncpy(field, src, strlen(whole line)) into small fields (stack overflow on
+// every filter load). This copies up to the closing quote, bounded, and keeps a quote in place
+// so the caller's strchr() still finds it.
+static void copy_quoted(char *dst, size_t n, const char *src)
+{
+	size_t i = 0;
+	while (src[i] && src[i] != '\"' && i + 2 < n) { dst[i] = src[i]; i++; }
+	dst[i] = '\"';
+	dst[i + 1] = 0;
+}" PDW.cpp \
+  '9456,9683' '9686,9937:s/strncpy(\([A-Za-z_.]*\), &szLine\[pos+1\], strlen(szLine))/copy_quoted(\1, sizeof \1, \&szLine[pos+1])/' '9939,10130' '10133,10251' '10907,10916'
 
 extract "$SRC/upstream_language.cpp" "$COMMON
 #include \"headers/language.h\"

@@ -23,6 +23,16 @@ static char szTEMP[MAX_STR_LEN];
 static int iTEMP;
 static bool bWin9x = false;
 int CompareCapcodes(char *szCapcode1, char *szCapcode2);
+// Upstream wrote strncpy(field, src, strlen(whole line)) into small fields (stack overflow on
+// every filter load). This copies up to the closing quote, bounded, and keeps a quote in place
+// so the caller's strchr() still finds it.
+static void copy_quoted(char *dst, size_t n, const char *src)
+{
+	size_t i = 0;
+	while (src[i] && src[i] != '"' && i + 2 < n) { dst[i] = src[i]; i++; }
+	dst[i] = '"';
+	dst[i + 1] = 0;
+}
 
 // ---- PDW.cpp lines 9456,9683 ----
 BOOL GetPrivateProfileSettings(LPCTSTR lpszAppTitle, LPCTSTR lpszIniPathName, PPROFILE pProfile)
@@ -354,7 +364,7 @@ bool ReadFilters(char *szFilters, PPROFILE pProfile, bool bNew)
 
 							if (szLine[pos+1] != '"')
 							{
-								strncpy(filter.capcode, &szLine[pos+1], strlen(szLine));
+								copy_quoted(filter.capcode, sizeof filter.capcode, &szLine[pos+1]);
 								filter.capcode[strchr(filter.capcode, '"') - filter.capcode] = 0;
 								pos += strlen(filter.capcode) + 1;	// + 1 to start at last "
 
@@ -374,7 +384,7 @@ bool ReadFilters(char *szFilters, PPROFILE pProfile, bool bNew)
 
 							if (szLine[pos+1] != '"')
 							{
-								strncpy(filter.label, &szLine[pos+1], strlen(szLine));
+								copy_quoted(filter.label, sizeof filter.label, &szLine[pos+1]);
 								filter.label[strchr(filter.label, '"') - filter.label] = 0;
 								pos += strlen(filter.label) + 1;	// + 1 to start at last "
 							}
@@ -386,7 +396,7 @@ bool ReadFilters(char *szFilters, PPROFILE pProfile, bool bNew)
 
 							if (szLine[pos+1] != '"')
 							{
-								strncpy(filter.text, &szLine[pos+1], strlen(szLine));
+								copy_quoted(filter.text, sizeof filter.text, &szLine[pos+1]);
 								filter.text[strchr(filter.text, '"') - filter.text] = 0;
 								pos += strlen(filter.text) + 1;	// + 1 to start at last "
 							}
@@ -447,7 +457,7 @@ bool ReadFilters(char *szFilters, PPROFILE pProfile, bool bNew)
 
 							if (szLine[pos+1] != '"')
 							{
-								strncpy(szSepfiles, &szLine[pos+1], strlen(szLine));
+								copy_quoted(szSepfiles, sizeof szSepfiles, &szLine[pos+1]);
 								szSepfiles[strchr(szSepfiles, '"') - szSepfiles] = 0;
 								pos += strlen(szSepfiles);
 								token = strtok(szSepfiles, ";");
