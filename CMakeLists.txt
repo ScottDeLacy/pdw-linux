@@ -15,6 +15,10 @@ set(PDW_CORE_FLAGS -fsigned-char -fpermissive -Wno-write-strings
 add_library(pdw STATIC
   libpdw/src/pocsag.cpp
   libpdw/src/flex.cpp
+  libpdw/src/acars.cpp
+  libpdw/src/mobitex.cpp
+  libpdw/src/ermes.cpp
+  libpdw/src/settings_table.cpp
   libpdw/src/upstream_misc.cpp
   libpdw/src/upstream_audio.cpp
   libpdw/src/upstream_decode_globals.cpp

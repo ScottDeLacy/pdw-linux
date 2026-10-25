@@ -24,6 +24,7 @@
 #define GWL_HINSTANCE (-6)
 #define MAKELONG(a, b) ((int32_t)(((uint16_t)(a)) | (((uint32_t)((uint16_t)(b))) << 16)))
 #define RGB(r, g, b) ((COLORREF)(((uint8_t)(r)) | (((uint32_t)(uint8_t)(g)) << 8) | (((uint32_t)(uint8_t)(b)) << 16)))
+#define wsprintf sprintf
 #define lstrcpy strcpy
 #define lstrcat strcat
 

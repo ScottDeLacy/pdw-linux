@@ -9,6 +9,8 @@
 #include "headers/sound_in.h"
 #include "headers/pdw_util.h"
 #include "headers/pdw_core.h"
+#include "headers/acars.h"
+#include "headers/mobitex.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -333,6 +335,159 @@ void Audio_To_Bits(char *lpAudioBuffer, long LenAudioBuffer)
 		}
 	} // endof main "for" loop.
 	WatchCtr = WatchCtr - (double)LenAudioBuffer;
+}
+
+// ---- sound_in.cpp lines 625,775 ----
+/* MOBITEX To Bits
+ *
+ * This routine does the following:
+ *
+ *   1.Takes the digitized audio captured by the Wave API and converts it to data bits.
+ *   2.Calls the required routine to decode the data bits.
+ */
+void MOBITEX_To_Bits(char *lpAudioBuffer, long LenAudioBuffer)
+{
+	atb_sig_cnt = 0;
+
+	// Loop through audio buffer turning audio samples into bits.
+	for (atb_ctr = 0; atb_ctr < LenAudioBuffer; atb_ctr++)
+	{
+     // If this is the first time being called or if the baudrate rate has changed
+     // since the last time we were called recalculate WatchStep.
+		if (BaudRate != last_baud_rate) 
+		{
+			// WatchStep is how often to check for bit in buffer
+			WatchStep = (double) Profile.audioSampleRate / (double) BaudRate;
+			WatchCtr = -1;
+			last_baud_rate = BaudRate;
+		}
+
+		// Get a sample and correct it.
+		val = lpAudioBuffer[atb_ctr];
+		val ^= 0x80;
+
+		/*** Process data bits *****/
+
+		if (!mb.timer && ((val > 2) || (val < -2)))
+		{
+			if (atb_sig_cnt < 3)			// Update signal indicator.
+			{
+				UpdateSigInd(0);	// Move signal indicator left 1
+				atb_sig_cnt++;
+			}
+		}
+		else if (atb_sig_cnt < 3)		// Update signal indicator.
+		{
+			UpdateSigInd(1);		// Move signal indicator right 1
+			atb_sig_cnt++;
+		}
+		atb_value = val;
+		atb_len++; // Keep count of number of 1/0 samples.
+
+		// Resync on 0/1 and 1/0 crossings.
+		// Only resync if last sample count was equal to a single 1/0 bit.
+		if ((atb_value < -1) && (atb_bit == high_audio))
+		{    
+			atb_bit = low_audio;
+
+			if (((atb_len < WatchStep * 2) &&
+				((atb_len / WatchStep) > clkt_lo) &&
+				((atb_len / WatchStep) < clkt_hi)))
+			{
+				WatchCtr = atb_ctr + (WatchStep / 2);		// center of bit == 1/2 data bit.
+			}
+		}
+		else if ((atb_value > -1) && (atb_bit == low_audio))
+		{
+			atb_bit = high_audio;
+		}
+		atb_len=0;
+      
+		// Get sample value and process it if on WatchStep
+		if (WatchCtr - atb_ctr < 1 && WatchCtr != -1)
+		{
+			mb.frame_sync(atb_bit);
+
+			WatchCtr += WatchStep;
+		}
+	} // endof main "for" loop.
+	WatchCtr = WatchCtr - (double)LenAudioBuffer;
+}
+
+
+/* ACARS to bits
+ *
+ * This routine does the following:
+ *
+ *   1.Takes the digitized audio captured by the Wave API and converts it to data bits.
+ *   2.Call the required routine to decode the data bits.
+ */
+void ACARS_To_Bits(char *lpAudioBuffer, long LenAudioBuffer)
+{ 
+	atb_sig_cnt = 0;
+
+	// Loop through audio buffer turning audio samples into bits.
+	for (atb_ctr = 0; atb_ctr < LenAudioBuffer; atb_ctr++)
+	{
+		// Get a sample and correct it.
+		val = lpAudioBuffer[atb_ctr];
+		val ^= 0x80;
+
+		if ((!acars.ac_alive) && ((val > 2) || (val < -2)))
+		{
+			if (atb_sig_cnt < 3)			// Update signal indicator.
+			{
+				UpdateSigInd(0);	// Move signal indicator left 1
+				atb_sig_cnt++;
+			}
+		}
+		else if (acars.ac_alive)
+		{
+			if (atb_sig_cnt < 3)			// Update signal indicator.
+			{
+				UpdateSigInd(1);	// Move signal indicator right 1
+				atb_sig_cnt++;
+			}
+			bMode_IDLE=false;
+		}
+		atb_value = val;
+		atb_len++;			// Keep count of number of 1/0 samples.
+
+      
+		// Process bit on 1/0 or 0/1 crossing
+		if ((atb_value < 0) && (atb_bit == high_audio))
+		{    
+			atb_bit = low_audio;
+
+			if (atb_len < 12) continue;   // Check if on full or half wave. Skip if on half wave.
+
+			process_acars_bit=1;				// get bit
+			atb_len=0;
+		}
+		else if ((atb_value > 0) && (atb_bit == low_audio))
+		{
+			atb_bit = high_audio;
+
+			if (atb_len < 12) continue;	// Check if on full or half wave. Skip if on half wave.              
+
+			process_acars_bit=1; // get bit
+			atb_len=0;
+		}
+
+		// If here we have a bit to process
+
+		if (process_acars_bit)
+		{
+			process_acars_bit=0;
+
+#ifdef AU_ACARS_BIT_TEST
+			if (atb_bit) misc_debug_msg("1");	// Show raw bits.
+			else		 misc_debug_msg("0");
+#endif
+
+			acars.frame(atb_bit);  // Decode acars packets.
+		}
+	} // endof main "for" loop.
 }
 
 // ---- sound_in.cpp lines 849,1028 ----

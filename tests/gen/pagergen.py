@@ -242,6 +242,69 @@ def flex_stream(mode, frames):
     return segs
 
 
+# ---------------------------------------------------------------- ACARS
+def _odd_parity(c):
+    c &= 0x7F
+    return c | (0x80 if bin(c).count("1") % 2 == 0 else 0)
+
+
+def acars_crc(data):
+    """CRC-16/KERMIT over the bytes from the mode character to ETX/ETB (the block check sequence)."""
+    crc = 0
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x8408 if crc & 1 else crc >> 1
+    return crc
+
+
+def acars_bits(reg, text, mode="2", ack="\x15", label="H1", block_id="4", msg_no="M01A", flight="QF0001"):
+    """ACARS downlink block as the data bit sequence (characters LSB first, odd parity)."""
+    assert len(reg) == 7 and len(label) == 2 and len(msg_no) == 4 and len(flight) == 6
+    body = [mode] + list(reg) + [ack] + list(label) + [block_id, "\x02"] + list(msg_no) + list(flight) + list(text) + ["\x03"]
+    body_bytes = [_odd_parity(ord(c)) for c in body]
+    crc = acars_crc(body_bytes)
+    frame = [0xFF] * 16 + [_odd_parity(0x2B), _odd_parity(0x2A), _odd_parity(0x16), _odd_parity(0x16), _odd_parity(0x01)]
+    frame += body_bytes + [crc & 0xFF, crc >> 8, 0x7F]
+    bits = []
+    for b in frame:
+        bits += [(b >> i) & 1 for i in range(8)]
+    return bits
+
+
+def render_acars(bits, rate=44100, amp=9000, invert=False, lead_s=0.2, tail_s=0.3, noise=0.0, lead_blip=True):
+    """MSK audio, 2400 baud: a bit that repeats the previous polarity is one 2400 Hz cycle, a bit
+    that changes it is a 1200 Hz half cycle, so every bit boundary is a zero crossing and the
+    polarity of the half wave that starts there is the data bit.
+    lead_blip: a short pulse before the key-up, as receiver noise would leave PDW's zero-crossing
+    tracker in the polarity it needs: the original locks onto the first crossing it sees, so a
+    signal whose first half wave has the polarity the tracker already holds is read half a bit
+    late (a limitation of the original, not tested here)."""
+    import random
+    rng = random.Random(2)
+    spb = rate / 2400.0
+    out = [0] * int(lead_s * rate)
+    n = len(bits)
+    if lead_blip:
+        first = (1 if bits[0] else -1) * (-1 if invert else 1)
+        out += [-first * math.sin(math.pi * i / 20) for i in range(20)]
+    noise_from = len(out)
+    for k in range(n):
+        d = bits[k]
+        nxt = bits[k + 1] if k + 1 < n else d
+        a = (0 if (k * spb) % 1 == 0 else 0)
+        i0, i1 = int(math.ceil(k * spb)), int(math.ceil((k + 1) * spb))
+        sign = (1 if d else -1) * (-1 if invert else 1)
+        for i in range(i0, i1):
+            t = (i - k * spb) / spb
+            v = math.sin(math.pi * t) if nxt != d else math.sin(2 * math.pi * t)
+            out.append(sign * v)
+    out += [0] * int(tail_s * rate)
+    # (noise only from the key-up on: noise in the silence before would set the tracker's polarity at random)
+    return [int(max(-32768, min(32767, round(v * amp + (rng.gauss(0, noise) if noise and i >= noise_from else 0)))))
+            for i, v in enumerate(out)]
+
+
 # ---------------------------------------------------------------- audio
 def render(bits, baud, rate=44100, amp=9000, invert=False, lead_s=0.3, tail_s=0.5, noise=0.0):
     """NRZ FSK -> discriminator-like audio (soft edges), 16-bit samples."""

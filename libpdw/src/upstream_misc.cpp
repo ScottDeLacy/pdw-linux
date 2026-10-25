@@ -9,6 +9,8 @@
 #include "headers/sound_in.h"
 #include "headers/pdw_util.h"
 #include "headers/pdw_core.h"
+#include "headers/acars.h"
+#include "headers/mobitex.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -2044,7 +2046,7 @@ void CollectLogfileLine(char *string, bool bFilter)
 						strcat(szLogFileLine, Current_MSG[MSG_MESSAGE]);
 					}
 				}
-				else if ((strstr(Current_MSG[MSG_MESSAGE], "?") != 0) && Profile.Linefeed)
+				else if ((strstr(Current_MSG[MSG_MESSAGE], "\273") != 0) && Profile.Linefeed)
 				{
 					for (int pos=0; Current_MSG[MSG_MESSAGE][pos]!=0; pos++)
 					{

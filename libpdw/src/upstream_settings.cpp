@@ -9,6 +9,8 @@
 #include "headers/sound_in.h"
 #include "headers/pdw_util.h"
 #include "headers/pdw_core.h"
+#include "headers/acars.h"
+#include "headers/mobitex.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -16,8 +18,7 @@
 #include <string.h>
 #include "headers/language.h"
 #include "headers/mailopts.h"
-// Placeholder for the Mobitex decoder state until mobitex.cpp is imported (slice 4).
-struct { int cfs, frsync, frsync_rev, bitsync, bitsync_rev, bitscr, ramnet, min_msg_len, show, timer, bitrate; } mb;
+#include "headers/mobitex.h"
 static char szTEMP[MAX_STR_LEN];
 static int iTEMP;
 static bool bWin9x = false;

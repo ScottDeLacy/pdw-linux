@@ -9,6 +9,8 @@
 #include "headers/sound_in.h"
 #include "headers/pdw_util.h"
 #include "headers/pdw_core.h"
+#include "headers/acars.h"
+#include "headers/mobitex.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>

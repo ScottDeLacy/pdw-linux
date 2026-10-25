@@ -15,23 +15,29 @@ fix() {  # stdin -> stdout
   # `long double` is plain double: that is what the original (MSVC) used, and x87/80-bit or
   # 128-bit long double (aarch64) would change the numerics and speed.
   sed -e 's/\r$//' \
-      -e "s/'\xb7'/'\\\\xB7'/g" -e "s/'\xbb'/'\\\\xBB'/g" -e 's/[\x80-\xff]/?/g' \
+      -e "s/'\xb7'/'\\\\xB7'/g" -e "s/'\xbb'/'\\\\xBB'/g" -e 's/\xb5/\\265/g' -e 's/\xb7/\\267/g' -e 's/\xbb/\\273/g' -e 's/[\x80-\xff]/?/g' \
       -e 's/long double/double/g' \
       -e 's|#include <windows.h>|#include "compat/windows.h"|' \
-      -e '/#include *<\(mmsystem\|commdlg\).h>/d' \
+      -e '/#include *<\(mmsystem\|commdlg\|commctrl\).h>/d' \
       -e '/#include *"\(headers\|utils\)\\/{s|\\|/|g}' \
       -e 's|#include *"\(headers\|Headers\|utils\)/\([A-Za-z_0-9.]*\)"|#include "headers/\L\2"|I' \
       -e 's|headers/helper_funcs.h|headers/pdw_util.h|'
 }
 
+# Windows path separators in C string literals ("%s\\x") become '/'.
+PATHSED='s#\\\\#/#g'
+
 # Decoder sources (verbatim apart from fix())
 for f in Pocsag.cpp Flex.cpp; do
   fix < "$UP/$f" > "$SRC/$(echo "$f" | tr 'A-Z' 'a-z')"
 done
+for f in acars.cpp mobitex.cpp ermes.cpp; do      # these also open data files by path
+  fix < "$UP/$f" | sed -e "$PATHSED" > "$SRC/$(echo "$f" | tr 'A-Z' 'a-z')"
+done
 
 # Headers the decoders include. helper_funcs.h is NOT imported: its author's
 # notice forbids reproduction, so we write our own utilities instead.
-for h in pdw.h misc.h gfx.h sound_in.h initapp.h decode.h; do
+for h in pdw.h misc.h gfx.h sound_in.h initapp.h decode.h acars.h mobitex.h ermes.h; do
   fix < "$UP/Headers/$h" > "$INC/$h"
 done
 # Upstream indexes iItemWidths[7] (the message column) one past its 7 elements.
@@ -65,14 +71,14 @@ COMMON='#include "compat/windows.h"
 #include "headers/sound_in.h"
 #include "headers/pdw_util.h"
 #include "headers/pdw_core.h"
+#include "headers/acars.h"
+#include "headers/mobitex.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>'
 
-# Windows path separators in C string literals ("%s\\x") become '/'.
-PATHSED='s#\\\\#/#g'
 # Upstream bug: these move/clear sizeof(the whole 1000-entry array) starting at element i or 1, which
 # runs past the end of the array. Fixed to the intended sizes (shift entries down, clear the last).
 AMSGSED='s#memmove(aMessages\[0\], aMessages\[1\], sizeof(aMessages))#memmove(aMessages[0], aMessages[1], sizeof(aMessages) - sizeof(aMessages[0])), memset(aMessages[999], 0, sizeof(aMessages[999]))#;s#memset(aMessages\[i\], 0, sizeof(aMessages))#memset(aMessages[i], 0, sizeof(aMessages[i]))#'
@@ -116,8 +122,7 @@ void pdw_message_shown(bool monitor, bool filtered, bool monitor_only, int match
 extract "$SRC/upstream_settings.cpp" "$COMMON
 #include \"headers/language.h\"
 #include \"headers/mailopts.h\"
-// Placeholder for the Mobitex decoder state until mobitex.cpp is imported (slice 4).
-struct { int cfs, frsync, frsync_rev, bitsync, bitsync_rev, bitscr, ramnet, min_msg_len, show, timer, bitrate; } mb;
+#include \"headers/mobitex.h\"
 static char szTEMP[MAX_STR_LEN];
 static int iTEMP;
 static bool bWin9x = false;
@@ -132,7 +137,7 @@ extern char szACARSPath[MAX_PATH];" language.cpp \
 fix < "$UP/Headers/language.h" > "$INC/language.h"
 
 extract "$SRC/upstream_audio.cpp" "$COMMON" sound_in.cpp \
-  '31,104:/^HWAVEIN/d;/^HWAVEOUT/d;/^WAVEHDR/d;/^HGLOBAL/d' '378,623' '849,1028'
+  '31,104:/^HWAVEIN/d;/^HWAVEOUT/d;/^WAVEHDR/d;/^HGLOBAL/d' '378,623' '625,775' '849,1028'
 
 extract "$SRC/upstream_decode_globals.cpp" "$COMMON" decode.cpp '28,96' "685,750:$PATHSED;"'s#^\t\t\t\tif ((pStatFile = fopen#\t\t\t\tif (!FileExists(szLogPathName)) CreateDirectory(szLogPathName, NULL);\n&#'
 
@@ -141,3 +146,6 @@ extract "$SRC/upstream_gfx.cpp" "$COMMON" Gfx.cpp "33,55:s/iItemWidths\\[7\\]/iI
 
 mkdir -p libpdw/include/utils
 fix < "$UP/utils/debug.h" > libpdw/include/utils/debug.h
+
+# Table of every pdw.ini setting (for front ends), derived from upstream's WriteSettings().
+python3 tools/gen_settings_table.py "$SRC/settings_table.cpp"

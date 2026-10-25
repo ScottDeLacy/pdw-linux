@@ -21,6 +21,9 @@
 #include "headers/pdw_core.h"
 #include "headers/language.h"
 #include "headers/mailopts.h"
+#include "headers/acars.h"
+#include "headers/mobitex.h"
+#include "headers/ermes.h"
 #include "pdw/decoder.hpp"
 
 // ---- globals the Windows front end normally defines -------------------------
@@ -29,7 +32,7 @@ PaneStruct Pane1, Pane2;
 char szWindowText[6][1000];
 char szPath[MAX_PATH] = ".";
 char szLogPathName[MAX_PATH], szWavePathName[MAX_PATH], szIniPathName[MAX_PATH];
-char szFilterPathName[MAX_PATH], szFilterBackup[MAX_PATH], szACARSPath[MAX_PATH];
+char szFilterPathName[MAX_PATH], szFilterBackup[MAX_PATH];
 char szFilenameDate[16];
 TCHAR szShortAppName[32] = "PDW";
 FILE *pLogFile = nullptr, *pFilterFile = nullptr, *pSepFilterFile = nullptr, *pStatFile = nullptr,
@@ -59,7 +62,9 @@ extern char atb_bit;
 #define FINE_CLKT_HI 1.90
 #define FINE_CLKT_LO 0.32
 
-// sound_in.cpp Reset_ATB(), minus the Mobitex branch (Mobitex: later slice).
+// sound_in.cpp Reset_ATB() (called when the data mode changes).
+#define COURSE_CLKT_HI 2.02
+#define COURSE_CLKT_LO 0.18
 void Reset_ATB(void)
 {
     memset(preamble_count, 0, sizeof(preamble_count));
@@ -72,11 +77,19 @@ void Reset_ATB(void)
     skipped_sc = 0;
     process_acars_bit = 0;
 
-    clkt_hi = FINE_CLKT_HI;
-    clkt_lo = FINE_CLKT_LO;
-    BaudRate = 1600;
-    last_baud_rate = 1600;
+    if (Profile.monitor_mobitex) {
+        clkt_hi = COURSE_CLKT_HI;
+        clkt_lo = COURSE_CLKT_LO;
+        BaudRate = mb.bitrate;
+        last_baud_rate = mb.bitrate;
+    } else {
+        clkt_hi = FINE_CLKT_HI;
+        clkt_lo = FINE_CLKT_LO;
+        BaudRate = 1600;
+        last_baud_rate = 1600;
+    }
 
+    // WatchStep is how often to check for bit in buffer
     WatchStep = (double)Profile.audioSampleRate / (double)BaudRate;
 }
 
@@ -456,9 +469,18 @@ struct Decoder::Impl {
                 }
             }
         }
+        else if (mb.timer) {  // dropped out of Mobitex mode
+            mb.timer--;
+            if (mb.timer == 0) display_showmo(MODE_IDLE);
+        }
         check_save_data();
         for (auto &buf : ready) {
-            if (Profile.monitor_paging) Audio_To_Bits(reinterpret_cast<char *>(buf.data()), (long)buf.size());
+            char *p = reinterpret_cast<char *>(buf.data());
+            long n = (long)buf.size();
+            if (Profile.monitor_paging) Audio_To_Bits(p, n);
+            else if (Profile.monitor_acars) ACARS_To_Bits(p, n);
+            else if (Profile.monitor_mobitex) MOBITEX_To_Bits(p, n);
+            // ERMES: upstream decodes it from the serial interface only (its audio path is disabled)
         }
         ready.clear();
         flush_notice();
@@ -619,6 +641,7 @@ Decoder::Decoder(const Config &cfg) : impl_(new Impl), cfg_(cfg)
         snprintf(szPath, sizeof szPath, "%s", saved);
     }
     set_language(Profile.lang_mi_index);
+    acars.read_data();   // optional ACARS label/aircraft/airline tables from the PDW folder
 }
 
 Decoder::~Decoder()
@@ -629,6 +652,7 @@ Decoder::~Decoder()
     g_on_status = nullptr;
     pdw_set_sound_hook(nullptr);
     free_lang_tables();
+    acars.free_data();
     MailInit(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0);   // stop the mail thread
     free(Pane1.buff_char); free(Pane1.buff_color);
     free(Pane2.buff_char); free(Pane2.buff_color);
