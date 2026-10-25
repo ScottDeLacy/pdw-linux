@@ -12,6 +12,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace pdw {
@@ -71,6 +72,36 @@ struct Config {
     bool flex_time = false;        // FlexTIME: use FLEX time broadcasts as program clock
 };
 
+// One entry of filters.ini (PDW's Filters dialog).
+struct Filter {
+    enum Type { Unused = 0, Flex = 1, Pocsag = 2, Text = 3, Ermes = 4, Acars = 5, Mobitex = 6 };
+    int type = Pocsag;
+    std::string capcode;            // address; '?' is a wildcard; POCSAG "1234567-3" limits the function number
+    std::string label;              // shown below the message; %1..%9 insert digits of the address
+    std::string text;               // words to find in the message ('&' separates up to 10; '^' = at start)
+    bool match_exact_msg = false;
+    bool cmd_enabled = false;       // run the filter command file
+    bool reject = false;            // hide matching messages
+    bool monitor_only = false;      // keep out of the filter pane
+    int wave_number = 0;            // 0 none, 1.. = Sound0.wav..
+    bool label_enabled = false;
+    int label_color = 0;            // 0..16
+    bool smtp = false;              // send e-mail (SMTP "selected filters" mode)
+    bool sep_filterfile_en = false;
+    std::vector<std::string> sep_filterfiles;   // up to 3 separate filter files
+    unsigned hitcounter = 0;
+    std::string lasthit_date, lasthit_time;
+};
+
+enum class Mode { Paging, Acars, Mobitex, Ermes };   // PDW's Monitor menu
+
+// A column box of the pane title bars (DrawPaneLabels() in upstream Gfx.cpp), in character cells.
+struct Column {
+    int id;               // 1 address, 2 time, 3 date, 4 mode, 5 type, 6 bitrate, 7 message
+    int start, width;     // start 0-based in cells; width 0 for the message column (takes the rest)
+    std::string title;    // depends on the monitored mode; the message column's depends on the pane
+};
+
 // Running totals, as in PDW's statistics dialog.
 struct Counters {
     int messages = 0, groupcalls = 0, rejected = 0, blocked = 0;
@@ -128,6 +159,44 @@ public:
     uint32_t color_rgb(uint8_t color_index) const;
 
     Counters counters() const;
+    bool flextime_detected() const;
+    unsigned long seconds_elapsed() const;         // audio time since the start
+    void reset_audio();                            // restart the bit slicer (after mode/decoder changes)
+
+    // System tray behaviour (Display > Systemtray): `cb(false)` asks the front end to restore its window.
+    using TrayCallback = std::function<void(bool hide)>;
+    void on_tray(TrayCallback cb);
+    void set_trayed(bool trayed);
+
+    // Sends a test mail with the current account settings and returns the SMTP dialogue.
+    std::string mail_test();
+
+    // ---- settings, by pdw.ini name (section "PDW", "SMTP" or "Filter") ----
+    // Integers are decimal strings, colours "r,g,b", text as is.
+    bool get_setting(const std::string &key, std::string &out, const std::string &section = "PDW") const;
+    long long get_int(const std::string &key, const std::string &section = "PDW") const;
+    bool set_setting(const std::string &key, const std::string &value, const std::string &section = "PDW");
+    bool set_int(const std::string &key, long long value, const std::string &section = "PDW");
+    // Call after changing settings: applies what needs more than a store (audio preset, polarity,
+    // pane sizes, columns, language, e-mail account).
+    std::vector<std::tuple<std::string, std::string, std::string>> all_settings() const;   // section, key, value
+    void apply_settings();
+    Mode mode() const;
+    void set_mode(Mode m);
+
+    // ---- filters ----
+    std::vector<Filter> filters() const;
+    void set_filters(const std::vector<Filter> &f);
+    bool save_filters();      // filters.ini (needs Config::dir or filters_file)
+    bool reload_filters();
+    void reset_hitcounters(bool all, const std::vector<int> &indices = {});
+
+    // ---- display state ----
+    void clear_panes(bool monitor, bool filter);   // also resets the pane buffers
+    std::vector<Column> columns(bool filter_pane) const;
+    int signal_position() const;                   // signal indicator needle, 0..20
+    std::string status_text() const;               // title-bar text
+    std::string data_dir() const;
 
     // Receive quality 0..100 (PDW's bit-error indicator).
     double rx_quality() const;

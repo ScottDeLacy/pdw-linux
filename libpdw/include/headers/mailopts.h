@@ -1,6 +1,7 @@
 // SMTP option bits stored in pdw.ini ("Options="), kept identical to the original so
 // existing settings files keep their meaning. Mail sending itself: see support.cpp.
 #pragma once
+#include <string>
 #include "compat/windows.h"
 
 #define MAIL_OPTION_MODE_ALL 0x000000
@@ -27,3 +28,4 @@ int MailInit(char *host, char *helo_domain, char *from, char *to, char *user, ch
 int SendMail(HWND response, bool match, bool monitor_only, int separate_smtp, char *capcode, char *time,
              char *date, char *mode, char *type, char *bitrate, char *message, char *label);
 void MailFlush(int timeout_ms);  // wait for queued mails to be sent
+std::string MailSendTest(char *host, char *helo, char *from, char *to, char *user, char *password, int port, int options);

@@ -149,3 +149,12 @@ fix < "$UP/utils/debug.h" > libpdw/include/utils/debug.h
 
 # Table of every pdw.ini setting (for front ends), derived from upstream's WriteSettings().
 python3 tools/gen_settings_table.py "$SRC/settings_table.cpp"
+
+# Front end: the dialog/menu tables from the resource script and PDW's toolbar artwork.
+python3 tools/rc2qt.py
+mkdir -p gui/res
+for f in open copy cpyUP cpyLO save prt options filter stats pause clr mode sigind exclamation pdwlogo2; do
+  cp "$UP/GFX/$f.bmp" "gui/res/$f.bmp"
+done
+cp "$UP/GFX/help.BMP" gui/res/help.bmp
+cp "$UP/GFX/pdw.ico" gui/res/pdw.ico

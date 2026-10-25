@@ -12,7 +12,7 @@ endif()
 set(PDW_CORE_FLAGS -fsigned-char -fpermissive -Wno-write-strings
                    -Wno-narrowing -Wno-format-security -Wno-deprecated-declarations)
 
-add_library(pdw STATIC
+add_library(pdw_core STATIC
   libpdw/src/pocsag.cpp
   libpdw/src/flex.cpp
   libpdw/src/acars.cpp
@@ -28,21 +28,49 @@ add_library(pdw STATIC
   libpdw/src/win32_shim.cpp
   libpdw/src/mail.cpp
   libpdw/src/support.cpp)
-target_include_directories(pdw PUBLIC libpdw/include PRIVATE libpdw)
+target_include_directories(pdw_core PUBLIC libpdw/include PRIVATE libpdw)
 
 # TLS for SMTP (pdw.ini [SMTP] SSL=1) when OpenSSL is available.
 find_package(OpenSSL QUIET)
 find_package(Threads REQUIRED)
-target_link_libraries(pdw PUBLIC Threads::Threads)
+target_link_libraries(pdw_core PUBLIC Threads::Threads)
 if(OpenSSL_FOUND)
-  target_compile_definitions(pdw PRIVATE PDW_HAVE_OPENSSL)
-  target_link_libraries(pdw PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(pdw_core PRIVATE PDW_HAVE_OPENSSL)
+  target_link_libraries(pdw_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
-target_compile_options(pdw PRIVATE ${PDW_CORE_FLAGS})
+target_compile_options(pdw_core PRIVATE ${PDW_CORE_FLAGS})
 
 add_executable(pdw-cli cli/main.cpp)
-target_link_libraries(pdw-cli PRIVATE pdw)
+target_link_libraries(pdw-cli PRIVATE pdw_core)
 target_compile_options(pdw-cli PRIVATE -fsigned-char -Wall -Wextra)
+
+
+# ---- Qt front end ---------------------------------------------------------------------------
+option(PDW_BUILD_GUI "Build the Qt desktop front end" ON)
+if(PDW_BUILD_GUI)
+  find_package(Qt6 COMPONENTS Widgets Multimedia QUIET)
+  if(Qt6_FOUND)
+    set(CMAKE_AUTOMOC ON)
+    qt_add_resources(PDW_QRC gui/res/resources.qrc)
+    add_executable(pdw
+      gui/main.cpp
+      gui/mainwindow.cpp
+      gui/panewidget.cpp
+      gui/inputsource.cpp
+      gui/rcdialog.cpp
+      gui/dialogs.cpp
+      gui/dialogs2.cpp
+      gui/dialogs_filters.cpp
+      gui/dialogshot.cpp
+      gui/selftest.cpp
+      gui/generated/rc_data.cpp
+      ${PDW_QRC})
+    target_include_directories(pdw PRIVATE gui)
+    target_link_libraries(pdw PRIVATE pdw_core Qt6::Widgets Qt6::Multimedia)
+  else()
+    message(STATUS "Qt6 not found: building the command-line decoder only")
+  endif()
+endif()
 
 enable_testing()
 add_subdirectory(tests)

@@ -25,6 +25,7 @@
 #include "headers/mobitex.h"
 #include "headers/ermes.h"
 #include "pdw/decoder.hpp"
+#include "settings_table.h"
 
 // ---- globals the Windows front end normally defines -------------------------
 PROFILE Profile;
@@ -46,6 +47,7 @@ int nCount_Missed[2] = {0, 0};
 int nCount_BlockBuffer[2] = {0, 0};
 double dRX_Quality = 100.0;
 extern bool bEmpty_Frame;
+extern bool bFlexTIME_detected;
 extern std::atomic<int> nSMTPemails, nSMTPerrors, nSMTPsessions;   // mail.cpp
 extern std::string g_smtp_last_error;
 extern unsigned long int aMessages[1000][3];
@@ -219,7 +221,8 @@ static void native_path(char *p)
 }
 
 // ---- system tray: not part of the headless core ------------------------------------
-void SystemTrayWindow(bool) {}
+static pdw::Decoder::TrayCallback g_on_tray;
+void SystemTrayWindow(bool hide) { if (g_on_tray) g_on_tray(hide); }
 
 // ---- application hooks ----------------------------------------------------------
 static pdw::Decoder::MessageCallback g_on_message;
@@ -228,7 +231,23 @@ static pdw::Decoder::LineCallback g_on_line;
 static pdw::Decoder::StatusCallback g_on_status;
 static std::string g_notice;
 
-void UpdateSigInd(int) {}
+// The signal indicator needle (sigind.cpp UpdateSigInd() without the drawing): moves right while a
+// signal is decoded and left in noise; the front end draws position 0..20.
+static int g_si_index = 0, g_si_low_hover = 0, g_si_hi_hover = 0;
+void UpdateSigInd(int direction)
+{
+    const int kMax = 20;
+    if (direction) {
+        g_si_low_hover = 0;
+        g_si_index ? g_si_index += 2 : g_si_index++;
+        if (g_si_index > kMax) { g_si_hi_hover++; g_si_index = kMax; }
+    } else {
+        if (g_si_low_hover > 1) g_si_low_hover = 0;
+        g_si_hi_hover = 0;
+        g_si_index--;
+        if (g_si_index < 0) { g_si_low_hover++; g_si_index = 0; }
+    }
+}
 
 void SetNewWindowText(char *text)
 {
@@ -650,6 +669,7 @@ Decoder::~Decoder()
     g_on_notice = nullptr;
     g_on_line = nullptr;
     g_on_status = nullptr;
+    g_on_tray = nullptr;
     pdw_set_sound_hook(nullptr);
     free_lang_tables();
     acars.free_data();
@@ -769,6 +789,258 @@ Counters Decoder::counters() const
             c.daily_msgs[i][k] = daily_stat[i][k]; c.daily_chars[i][k] = daily_char[i][k];
         }
     return c;
+}
+
+// ---- settings by name ------------------------------------------------------------------------
+static const SettingEntry *find_setting(const std::string &key, const std::string &section)
+{
+    for (const SettingEntry *e = g_setting_table; e->key; e++)
+        if (strcasecmp(e->key, key.c_str()) == 0 && strcasecmp(e->section, section.c_str()) == 0) return e;
+    return nullptr;
+}
+
+bool Decoder::get_setting(const std::string &key, std::string &out, const std::string &section) const
+{
+    const SettingEntry *e = find_setting(key, section);
+    if (!e) return false;
+    if (e->type == SettingEntry::Int) {
+        long long v = 0;
+        e->i(false, v);
+        out = std::to_string(v);
+    } else if (e->type == SettingEntry::String) {
+        e->s(false, out);
+    } else {
+        unsigned c = 0;
+        e->c(false, c);
+        out = std::to_string(GetRValue(c)) + "," + std::to_string(GetGValue(c)) + "," + std::to_string(GetBValue(c));
+    }
+    return true;
+}
+
+std::vector<std::tuple<std::string, std::string, std::string>> Decoder::all_settings() const
+{
+    std::vector<std::tuple<std::string, std::string, std::string>> v;
+    for (const SettingEntry *e = g_setting_table; e->key; e++) {
+        std::string val;
+        get_setting(e->key, val, e->section);
+        v.emplace_back(e->section, e->key, val);
+    }
+    return v;
+}
+
+long long Decoder::get_int(const std::string &key, const std::string &section) const
+{
+    std::string v;
+    return get_setting(key, v, section) ? atoll(v.c_str()) : 0;
+}
+
+bool Decoder::set_setting(const std::string &key, const std::string &value, const std::string &section)
+{
+    const SettingEntry *e = find_setting(key, section);
+    if (!e) return false;
+    if (e->type == SettingEntry::Int) {
+        long long v = atoll(value.c_str());
+        e->i(true, v);
+    } else if (e->type == SettingEntry::String) {
+        std::string v = value;
+        e->s(true, v);
+    } else {
+        int r, g, b;
+        if (sscanf(value.c_str(), "%d,%d,%d", &r, &g, &b) != 3) return false;
+        unsigned c = RGB(r, g, b);
+        e->c(true, c);
+    }
+    return true;
+}
+
+bool Decoder::set_int(const std::string &key, long long value, const std::string &section)
+{
+    return set_setting(key, std::to_string(value), section);
+}
+
+void Decoder::apply_settings()
+{
+    Profile.audioSampleRate = kSampleRate;
+    SetAudioConfig(Profile.audioConfig);
+    mb.frsync_rev = ~mb.frsync;
+    mb.bitsync_rev = ~mb.bitsync;
+    low_audio = Profile.invert ? DEFAULT_HI_AUDIO : DEFAULT_LO_AUDIO;
+    high_audio = Profile.invert ? DEFAULT_LO_AUDIO : DEFAULT_HI_AUDIO;
+    set_language(Profile.lang_mi_index);
+    SetMessageItemPositionsWidth();
+    // pane scrollback sizes
+    if (Profile.pane1_size < 10) Profile.pane1_size = 10;
+    if (Profile.pane2_size < 10) Profile.pane2_size = 10;
+    if ((unsigned)Profile.pane1_size != Pane1.buff_lines) { free(Pane1.buff_char); free(Pane1.buff_color); init_pane(Pane1, Profile.pane1_size); }
+    if ((unsigned)Profile.pane2_size != Pane2.buff_lines) { free(Pane2.buff_char); free(Pane2.buff_color); init_pane(Pane2, Profile.pane2_size); }
+    MailInit(Profile.szMailHost, Profile.szMailHeloDomain, Profile.szMailFrom, Profile.szMailTo, Profile.szMailUser,
+             Profile.szMailPassword, Profile.iMailPort, Profile.nMailOptions);
+}
+
+Mode Decoder::mode() const
+{
+    if (Profile.monitor_acars) return Mode::Acars;
+    if (Profile.monitor_mobitex) return Mode::Mobitex;
+    if (Profile.monitor_ermes) return Mode::Ermes;
+    return Mode::Paging;
+}
+
+// ChangeDataMode() from upstream PDW.cpp.
+void Decoder::set_mode(Mode m)
+{
+    Profile.monitor_paging = Profile.monitor_acars = Profile.monitor_mobitex = Profile.monitor_ermes = false;
+    switch (m) {
+        case Mode::Paging: Profile.monitor_paging = true; strcpy(szWindowText[2], "POCSAG/FLEX..."); break;
+        case Mode::Acars: Profile.monitor_acars = true; strcpy(szWindowText[2], "ACARS..."); break;
+        case Mode::Mobitex: Profile.monitor_mobitex = true; strcpy(szWindowText[2], "MOBITEX..."); break;
+        case Mode::Ermes: Profile.monitor_ermes = true; strcpy(szWindowText[2], "ERMES..."); break;
+    }
+    SetMessageItemPositionsWidth();
+    Reset_ATB();
+    acars.reset();
+    SetNewWindowText((char *)"");
+}
+
+// ---- filters ----------------------------------------------------------------------------------
+static Filter to_api(const FILTER &f)
+{
+    Filter o;
+    o.type = f.type; o.capcode = f.capcode; o.label = f.label; o.text = f.text;
+    o.match_exact_msg = f.match_exact_msg; o.cmd_enabled = f.cmd_enabled; o.reject = f.reject;
+    o.monitor_only = f.monitor_only; o.wave_number = f.wave_number; o.label_enabled = f.label_enabled;
+    o.label_color = f.label_color; o.smtp = f.smtp; o.sep_filterfile_en = f.sep_filterfile_en;
+    for (int i = 0; i < f.sep_filterfiles && i < 3; i++) o.sep_filterfiles.push_back(f.sep_filterfile[i]);
+    o.hitcounter = f.hitcounter; o.lasthit_date = f.lasthit_date; o.lasthit_time = f.lasthit_time;
+    return o;
+}
+
+static FILTER from_api(const Filter &o)
+{
+    FILTER f;
+    memset(&f, 0, sizeof f);
+    f.type = (FILTER_TYPE)o.type;
+    snprintf(f.capcode, sizeof f.capcode, "%s", o.capcode.c_str());
+    snprintf(f.label, sizeof f.label, "%s", o.label.c_str());
+    snprintf(f.text, sizeof f.text, "%s", o.text.c_str());
+    f.match_exact_msg = o.match_exact_msg; f.cmd_enabled = o.cmd_enabled; f.reject = o.reject;
+    f.monitor_only = o.monitor_only; f.wave_number = o.wave_number; f.label_enabled = o.label_enabled;
+    f.label_color = o.label_color; f.smtp = o.smtp; f.sep_filterfile_en = o.sep_filterfile_en;
+    f.sep_filterfiles = (int)std::min<size_t>(o.sep_filterfiles.size(), 3);
+    for (int i = 0; i < f.sep_filterfiles; i++)
+        snprintf(f.sep_filterfile[i], sizeof f.sep_filterfile[i], "%s", o.sep_filterfiles[i].c_str());
+    f.hitcounter = o.hitcounter;
+    snprintf(f.lasthit_date, sizeof f.lasthit_date, "%s", o.lasthit_date.c_str());
+    snprintf(f.lasthit_time, sizeof f.lasthit_time, "%s", o.lasthit_time.c_str());
+    return f;
+}
+
+std::vector<Filter> Decoder::filters() const
+{
+    std::vector<Filter> v;
+    for (auto &f : Profile.filters) v.push_back(to_api(f));
+    return v;
+}
+
+void Decoder::set_filters(const std::vector<Filter> &f)
+{
+    Profile.filters.clear();
+    for (auto &x : f) Profile.filters.push_back(from_api(x));
+    bUpdateFilters = true;
+}
+
+bool Decoder::save_filters()
+{
+    if (!impl_->has_dir && cfg_.filters_file.empty()) return false;
+    WriteFilters(&Profile, 0);
+    bUpdateFilters = false;
+    return true;
+}
+
+// IDM_RELOAD in upstream: re-read filters.ini, falling back to the backup file if it is damaged.
+bool Decoder::reload_filters()
+{
+    if (!FileExists(szFilterPathName)) return false;
+    Profile.filters.clear();
+    if (ReadFilters(szFilterPathName, &Profile, false)) return true;
+    Profile.filters.clear();
+    return ReadFilters(szFilterBackup, &Profile, false);
+}
+
+void Decoder::reset_hitcounters(bool all, const std::vector<int> &indices)
+{
+    auto reset = [](FILTER &f) { f.hitcounter = 0; f.lasthit_date[0] = f.lasthit_time[0] = 0; };
+    if (all) for (auto &f : Profile.filters) reset(f);
+    else for (int i : indices) if (i >= 0 && (size_t)i < Profile.filters.size()) reset(Profile.filters[i]);
+    bUpdateFilters = true;
+}
+
+// ---- display state ----------------------------------------------------------------------------
+void Decoder::clear_panes(bool monitor, bool filter)
+{
+    auto clear = [](PaneStruct &p) {
+        p.Bottom = 0;
+        p.currentPos = 0;
+        p.currentColor = COLOR_UNUSED;
+        for (unsigned x = 0; x < p.buff_lines; x++) { p.buff_char[x * (LINE_SIZE + 1)] = 0; p.buff_color[x * (LINE_SIZE + 1)] = COLOR_UNUSED; }
+    };
+    if (monitor) clear(Pane1);
+    if (filter) clear(Pane2);
+    SetNewWindowText((char *)"");
+}
+
+std::vector<Column> Decoder::columns(bool filter_pane) const
+{
+    std::vector<Column> v;
+    int left = 0;
+    for (int i = 0; i < 7; i++) {
+        int id = Profile.ScreenColumns[i];
+        if (id == 0) break;
+        Column c{id, left, 0, ""};
+        int w = (i == 0 ? (int)cxChar : 0);
+        switch (id) {
+            case 1:
+                c.title = Profile.monitor_acars ? "Aircraft Reg"
+                          : Profile.monitor_mobitex ? "MAN" : "Address";
+                if (Profile.monitor_acars || Profile.monitor_mobitex || Profile.monitor_ermes || Profile.FlexGroupMode) {}
+                break;
+            case 2: c.title = "Time"; break;
+            case 3: c.title = "Date"; break;
+            case 4: c.title = Profile.monitor_acars ? "Msg.No." : Profile.monitor_mobitex ? "Sender" : "Mode"; break;
+            case 5: c.title = Profile.monitor_acars ? "DBI" : "Type"; break;
+            case 6: c.title = Profile.monitor_acars ? "Mode" : "Bitrate"; break;
+            case 7: c.title = filter_pane ? "Filtered Messages" : "Monitored Messages"; break;
+        }
+        if (id == 7) {
+            c.width = 0;
+        } else {
+            c.width = w + iItemWidths[id] / (int)cxChar;
+            left += iItemWidths[id] / (int)cxChar;
+            if (i == 0) left += (int)cxChar;
+        }
+        v.push_back(c);
+    }
+    return v;
+}
+
+int Decoder::signal_position() const { return g_si_index; }
+void Decoder::on_tray(TrayCallback cb) { g_on_tray = std::move(cb); }
+void Decoder::set_trayed(bool t) { bTrayed = t; }
+unsigned long Decoder::seconds_elapsed() const { return iSecondsElapsed; }
+void Decoder::reset_audio() { Reset_ATB(); }
+bool Decoder::flextime_detected() const { return bFlexTIME_detected; }
+std::string Decoder::mail_test()
+{
+    return MailSendTest(Profile.szMailHost, Profile.szMailHeloDomain, Profile.szMailFrom, Profile.szMailTo, Profile.szMailUser,
+                        Profile.szMailPassword, Profile.iMailPort, Profile.nMailOptions);
+}
+std::string Decoder::data_dir() const { return szPath; }
+
+std::string Decoder::status_text() const
+{
+    std::string s = szWindowText[0];
+    for (int i = 1; i < 6; i++)
+        if (szWindowText[i][0]) { s += " - "; s += szWindowText[i]; }
+    return s;
 }
 
 double Decoder::rx_quality() const { return dRX_Quality; }

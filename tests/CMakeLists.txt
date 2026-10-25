@@ -11,3 +11,8 @@ endif()
 if(Python3_FOUND)
   add_test(NAME modes COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run_modes_tests.py $<TARGET_FILE:pdw-cli>)
 endif()
+
+if(TARGET pdw)
+  add_test(NAME gui_dialogs COMMAND pdw --dir ${CMAKE_CURRENT_BINARY_DIR}/guidata --selftest ${CMAKE_CURRENT_BINARY_DIR}/guishots)
+  set_tests_properties(gui_dialogs PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()

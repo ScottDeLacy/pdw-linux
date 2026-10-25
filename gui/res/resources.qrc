@@ -1,0 +1,8 @@
+<RCC>
+  <qresource prefix="/">
+    <file>open.bmp</file><file>copy.bmp</file><file>cpyUP.bmp</file><file>cpyLO.bmp</file><file>save.bmp</file>
+    <file>prt.bmp</file><file>options.bmp</file><file>filter.bmp</file><file>stats.bmp</file><file>pause.bmp</file>
+    <file>help.bmp</file><file>clr.bmp</file><file>mode.bmp</file><file>sigind.bmp</file><file>exclamation.bmp</file>
+    <file>pdwlogo2.bmp</file><file>pdw.ico</file>
+  </qresource>
+</RCC>

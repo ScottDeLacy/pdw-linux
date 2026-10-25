@@ -233,7 +233,7 @@ namespace {
 
 // Sends one mail. `line` is the text built by SendMail(); the 0xBB marker (PDW's linefeed) becomes
 // " - " in the subject and a newline in the body.
-bool deliver(const Settings &s, const std::string &line, std::string &err)
+bool deliver(const Settings &s, const std::string &line, std::string &err, std::string *transcript = nullptr)
 {
     std::string subject, body;
     for (unsigned char c : line) {
@@ -261,11 +261,13 @@ bool deliver(const Settings &s, const std::string &line, std::string &err)
     std::string t;
     auto expect = [&](std::initializer_list<int> ok, const char *what) {
         int code = c.reply(t);
+        if (transcript) *transcript += "< " + t;
         for (int o : ok) if (code == o) return true;
         err = std::string(what) + ": " + (t.empty() ? "no answer" : t);
         return false;
     };
     auto cmd = [&](const std::string &x, std::initializer_list<int> ok, const char *what) {
+        if (transcript) *transcript += "> " + (x.rfind("AUTH", 0) == 0 || what == std::string("AUTH user") || what == std::string("AUTH password") ? std::string("(auth)") : x) + "\n";
         if (!c.send(x + "\r\n")) { err = std::string(what) + ": connection lost"; return false; }
         return expect(ok, what);
     };
@@ -462,3 +464,22 @@ int SendMail(HWND, bool match, bool monitor_only, int separate_smtp, char *capco
 }
 
 void MailFlush(int timeout_ms) { mailer().flush(timeout_ms); }
+
+// Synchronous test mail for the SMTP dialog; returns the dialogue (or the error).
+std::string MailSendTest(char *host, char *helo, char *from, char *to, char *user, char *password, int port, int options)
+{
+    Settings s;
+    s.host = host ? host : "";
+    s.helo = helo ? helo : "";
+    s.from = from ? from : "";
+    s.to = to ? to : "";
+    s.user = user ? user : "";
+    s.password = password ? password : "";
+    s.port = port > 0 ? port : 25;
+    s.options = options;
+    s.ssl = (options & MAIL_OPTION_SSL) != 0;
+    s.verify = GetPrivateProfileInt("SMTP", "SSLVerify", 1, szIniPathName) != 0;
+    std::string transcript, err;
+    const bool ok = deliver(s, "012345678 12:00 01-01-2026 FLEX ALPHA 1600 Message - Label ", err, &transcript);
+    return transcript + (ok ? "Test mail sent.\n" : "Error: " + err + "\n");
+}

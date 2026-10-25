@@ -70,6 +70,7 @@ inline bool read(const std::string &path, Audio &out, std::string &err)
 class Writer {
 public:
     ~Writer() { close(); }
+    bool isOpen() const { return f_ != nullptr; }
     bool open(const std::string &path, double rate)
     {
         f_ = fopen(path.c_str(), "wb");
