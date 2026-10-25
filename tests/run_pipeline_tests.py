@@ -329,7 +329,7 @@ def main():
     srv.srv.close()
 
     # STARTTLS (self-signed certificate: refused by default, accepted with SSLVerify=0)
-    if shutil.which("openssl"):
+    if shutil.which("openssl") and not os.environ.get("PDW_NO_TLS"):   # PDW_NO_TLS: binary built without OpenSSL
         import ssl
         key, crt = os.path.join(tmp, "k.pem"), os.path.join(tmp, "c.pem")
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt,

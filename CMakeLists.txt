@@ -31,7 +31,10 @@ add_library(pdw_core STATIC
 target_include_directories(pdw_core PUBLIC libpdw/include PRIVATE libpdw)
 
 # TLS for SMTP (pdw.ini [SMTP] SSL=1) when OpenSSL is available.
-find_package(OpenSSL QUIET)
+option(PDW_USE_OPENSSL "Use OpenSSL for TLS in the e-mail forwarder when found" ON)
+if(PDW_USE_OPENSSL)
+  find_package(OpenSSL QUIET)
+endif()
 find_package(Threads REQUIRED)
 target_link_libraries(pdw_core PUBLIC Threads::Threads)
 if(OpenSSL_FOUND)
