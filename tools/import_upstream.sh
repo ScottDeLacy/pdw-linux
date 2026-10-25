@@ -32,7 +32,8 @@ for f in Pocsag.cpp Flex.cpp; do
   fix < "$UP/$f" > "$SRC/$(echo "$f" | tr 'A-Z' 'a-z')"
 done
 for f in acars.cpp mobitex.cpp ermes.cpp; do      # these also open data files by path
-  fix < "$UP/$f" | sed -e "$PATHSED" > "$SRC/$(echo "$f" | tr 'A-Z' 'a-z')"
+  # (clang rejects a ?: of two string literals passed as char*; cast it)
+  fix < "$UP/$f" | sed -e "$PATHSED" -e 's/display_show_str(&Pane1, \(((ack & 0x7F) == 0x15) ? "NAK" : "ACK"\))/display_show_str(\&Pane1, (char *)(\1))/' > "$SRC/$(echo "$f" | tr 'A-Z' 'a-z')"
 done
 
 # Headers the decoders include. helper_funcs.h is NOT imported: its author's

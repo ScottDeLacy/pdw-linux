@@ -782,7 +782,7 @@ void ACARS::out_dir_ack_nak(void)
 			}
 		}
 	}
-	display_show_str(&Pane1, ((ack & 0x7F) == 0x15) ? "NAK" : "ACK");
+	display_show_str(&Pane1, (char *)(((ack & 0x7F) == 0x15) ? "NAK" : "ACK"));
 	ShowMessage();   // Display Message.
 }
 
