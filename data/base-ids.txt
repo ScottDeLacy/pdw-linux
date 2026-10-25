@@ -1,0 +1,16 @@
+#
+# base-ids.txt
+#
+# You can use this file to label BaseIDs. The label will appear in the title bar
+# next to the BaseID, like :
+# 
+# PDW v2.5 - MOBITEX - 8000 (base) - NetworkID: EB90 - BaseID: 011B (Zoetermeer)
+#
+# Use the examples below to add your own labels
+#
+
+0001=London
+001B=Amsterdam
+011B=Zoetermeer
+020B=Paris
+071F=Madrid
