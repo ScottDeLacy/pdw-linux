@@ -119,6 +119,9 @@ void PaneView::resizeEvent(QResizeEvent *e)
 void PaneView::paintEvent(QPaintEvent *)
 {
     QPainter p(viewport());
+    // WA_OpaquePaintEvent promises we paint every pixel; without this fill nothing clears the buffer and
+    // Wayland shows stale/self-referencing contents (window-in-window "hall of mirrors").
+    p.fillRect(viewport()->rect(), viewport()->palette().color(QPalette::Window));
     p.setFont(font_);
     const int first = verticalScrollBar()->value();
     const int xoff = -horizontalScrollBar()->value() + kLeftPad;
