@@ -1,0 +1,58 @@
+name: GUI snapshot
+# Runs the real GUI (native Cocoa backend, a real macOS desktop session) on a generated pager WAV and saves
+# a screenshot, so painting/fonts/menus on macOS can be reviewed without owning a Mac. Also asserts that the
+# GUI decoded the expected messages to its log.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/gui-snapshot]
+jobs:
+  snapshot:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install cmake ninja qt openssl python3
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix openssl)"
+          cmake --build build
+      - name: Generate test audio
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tests/gen")
+          import pagergen as pg
+          msgs = [(1234567, 3, "HELLO WORLD 0123", False), (765432, 3, "TEST ALPHA MESSAGE", False),
+                  (234567, 0, "5551234 -98", True)]
+          pg.write_wav("snap.wav", pg.render(pg.pocsag_stream(msgs), 1200, 44100), 44100)
+          PY
+      - name: Run GUI and capture the screen
+        run: |
+          mkdir -p snap-data artifacts
+          # native Cocoa platform (NOT offscreen): the point is to exercise the real backing store
+          ./build/pdw --dir "$PWD/snap-data" --play snap.wav > artifacts/pdw-stdout.txt 2> artifacts/pdw-stderr.txt &
+          PID=$!
+          sleep 12
+          osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $PID) to true" || echo "could not raise window"
+          sleep 2
+          screencapture -x artifacts/screen-${{ matrix.os }}.png || echo "screencapture failed"
+          kill $PID || true
+          sleep 1
+          ls -la snap-data snap-data/Logfiles artifacts || true
+      - name: Assert the GUI decoded the messages
+        run: |
+          cat snap-data/Logfiles/*.log
+          grep -q "HELLO WORLD 0123" snap-data/Logfiles/*.log
+          grep -q "TEST ALPHA MESSAGE" snap-data/Logfiles/*.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-snapshot-${{ matrix.os }}
+          path: |
+            artifacts
+            snap-data
