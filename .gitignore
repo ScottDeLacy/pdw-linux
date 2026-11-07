@@ -2,3 +2,4 @@ build/
 upstream/
 *.wav
 __pycache__/
+dist/

@@ -27,3 +27,8 @@ Not imported on purpose: upstream's helper_funcs.cpp/.h, which carry the notice
 redistributed under the GPL. Their few utility functions are re-implemented in
 libpdw/src/support.cpp. Upstream's utils/ (AT&T/Lucent OSTYPE, binary.cpp) are
 likewise not used.
+
+Also derived from upstream: gui/res/*.bmp and pdw.ico (PDW's toolbar artwork), data/language.df,
+data/base-ids.txt and data/PDW.pdf (the PDW manual), and the dialog/menu tables in gui/generated/
+(produced from upstream's Rsrc.rc by tools/rc2qt.py). The test-signal generators in tests/gen/
+contain no upstream code.
