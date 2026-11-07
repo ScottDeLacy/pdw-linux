@@ -69,8 +69,13 @@ protocol descriptions, not from PDW code), under normal and ASan/UBSan builds:
   file, filter sounds, language tables, statistics, SMTP including STARTTLS.
 - Every dialog opens, and pressing OK changes nothing.
 
-**Not verified:** real signals; macOS and aarch64 builds (CI builds them, nobody has looked at
-the output); Mobitex and ERMES decoding beyond "does not crash"; long-run soak.
+- Real signal: live POCSAG decoded from an RTL-SDR on Debian x86-64 (`pdw --rtl`), 2026-11-06.
+- macOS (Intel and Apple silicon): the GUI runs in a real desktop session (CI job "GUI snapshot"), plays a
+  generated POCSAG WAV, decodes it to the log, and uploads a screenshot; reviewed 2026-11-07, draws cleanly.
+
+**Not verified:** a real dongle or sound-card input on macOS (and a Finder-launched app finding `rtl_fm`
+in Homebrew's path); aarch64 Linux beyond CI and qemu; Mobitex and ERMES decoding beyond "does not crash";
+long-run soak.
 
 ## Known limitations (inherited from the original)
 
